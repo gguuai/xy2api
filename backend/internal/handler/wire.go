@@ -53,7 +53,9 @@ func ProvideAdminHandlers(
 	settingService *service.SettingService,
 	codexTicketGateway *service.OpenAIGatewayService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
+	controlled *service.ControlledSchedulingService,
 ) *AdminHandlers {
+	accountHandler.SetSchedulingController(controlled.Store)
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetIQCheckService(iqCheckService)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
@@ -61,6 +63,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetCodexAccountTicketService(codexTicketGateway)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	return &AdminHandlers{
+		Scheduling:             admin.NewSchedulingHandler(controlled.Store, controlled.Explain),
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
 		Group:                  groupHandler,

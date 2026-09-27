@@ -56,6 +56,7 @@ const (
 const geminiDummyThoughtSignature = "skip_thought_signature_validator"
 
 type GeminiMessagesCompatService struct {
+	controlledScheduling      *ControlledSchedulingService
 	accountRepo               AccountRepository
 	groupRepo                 GroupRepository
 	cache                     GatewayCache
@@ -123,6 +124,47 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 	}
 
 	cacheKey := "gemini:" + sessionHash
+
+	// The controlled allocator runs before the legacy sticky/OAuth/LRU order.
+	// Its candidate query stays inside the caller's group even for force-platform
+	// routes; a missing group candidate is not authorization to use another group.
+	if s.controlledScheduling != nil {
+		r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, requestedModel, sessionHash)
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, platform, hasForcePlatform)
+			if err != nil {
+				return nil, fmt.Errorf("query controlled Gemini accounts: %w", err)
+			}
+			pool := make([]*Account, 0, len(accounts))
+			for i := range accounts {
+				pool = append(pool, &accounts[i])
+			}
+			eligible := func(account *Account) (bool, string) {
+				if account == nil || !account.IsSchedulable() {
+					return false, "account_unavailable"
+				}
+				simpleUngrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+				if !simpleUngrouped && !openAIStickyAccountMatchesGroup(account, groupID) {
+					return false, "group_mismatch"
+				}
+				if account.IsAPIKeyOrBedrock() && account.IsQuotaExceeded() {
+					return false, "quota_exhausted"
+				}
+				if !s.isAccountUsableForRequest(ctx, account, requestedModel, platform, useMixedScheduling) {
+					return false, "model_platform_or_rate_limit"
+				}
+				return true, "eligible"
+			}
+			result, err := s.controlledScheduling.selectAccount(ctx, r, pool, eligible, excludedIDs, false)
+			if err != nil {
+				return nil, err
+			}
+			return result.Account, nil
+		}
+	}
 
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
@@ -825,7 +867,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 		// Special-case: signature/thought_signature validation errors are not transient, but may be fixed by
 		// downgrading Claude thinking/tool history to plain text (conservative two-stage retry).
-		if resp.StatusCode == http.StatusBadRequest && signatureRetryStage < 2 {
+		if !ControlledSchedulingEnabled(ctx) && resp.StatusCode == http.StatusBadRequest && signatureRetryStage < 2 {
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
 
@@ -917,7 +959,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				// Mark as rate-limited early so concurrent requests avoid this account.
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			if attempt < geminiMaxRetries {
+			if !ControlledSchedulingEnabled(ctx) && attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -1405,7 +1447,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			if resp.StatusCode == 429 {
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			if attempt < geminiMaxRetries {
+			if !ControlledSchedulingEnabled(ctx) && attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")

@@ -305,6 +305,8 @@
     "253_content_moderation_engine_meta.sql": "420af91eec85bdb60474640612a0f4d069db6ddfb21e6ed702b89713f3599287",
     "254_channel_reasoning_effort_multipliers.sql": "66feb546785dfa385d8efd268a40276cd8ffdb0cead7026cd79e339a3b69edf1",
     "255_affiliate_ledger_operation_id.sql": "3823bfea5f64feb58f5fcebc341c6877eaefc97834b4cd652c8e83ad08ed78da",
-    "256_iq_current_health.sql": "cae5a91d5bdb956aec8467da333206bb7b95738b8e0a3f7008addf14916cc840"
+    "256_iq_current_health.sql": "cae5a91d5bdb956aec8467da333206bb7b95738b8e0a3f7008addf14916cc840",
+    "257_explicit_account_scheduling.sql": "94490e12af9e0321305c1442c66312ce31b7b94b1e71846eaf0c9326f0310f5e",
+    "258_scheduling_terminal_intent_index.sql": "7a6e5eaf0578898f5f398fb42e567335a422ba0f82b1f2daf19a2d06d66951b4"
   }
 }

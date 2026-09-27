@@ -346,6 +346,7 @@ func provideCleanup(
 			{"OpenAIWSPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.CloseOpenAIWSPool()
+					openAIGateway.CloseControlledScheduling()
 				}
 				return nil
 			}},

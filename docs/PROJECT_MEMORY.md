@@ -4,6 +4,52 @@
 
 ## 当前交接状态
 
+### PR #66 推送失败复核与 lint 闭环（2026-09-27）
+
+- 复核确认此前不是 Git 推送失败：`86a6b05b8` 已在远端，PR #66 的实际阻断是 `golangci-lint` 报告的 37 项问题。修复覆盖错误返回值检查、类型断言、Redis 依赖豁免说明、De Morgan 静态规范、未使用代码和所有受影响文件格式化；sqlmock 清理改为显式忽略其未声明的 Close 错误，避免测试清理断言制造假失败。
+- lint 修复提交 `b6d3b7f15397f44126f667368935e9657e936df0` 与最终交接提交 `50697c0c562ad0850b288aff5c8dca06cc249246` 已推送至 `feat/controlled-account-scheduling`，继续更新现有 PR #66，未创建重复 PR。候选工作树 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work` 与受保护源 `/xy2/xy2api` 的边界保持不变。
+- 最终验证：`golangci-lint v2.13.2` 为 0 issues；`go test ./internal/scheduling ./migrations -race -count=1` PASS；`go test ./internal/service -count=1` PASS（156.870s）；`git diff --check` PASS。没有生产部署、数据库写入或真实上游请求。
+- 四角色仍固定为 `/xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}`；本轮仅追加调度验证记录，未修改其字节内容。三态行为仍以角色账本原始观测为准：BASELINE 保留 smart 且不阻断，MODIFIED 转 unknown 并阻断，ROLLBACK 恢复基线哈希与行为。
+- PR #66 当前头与远端一致，正文已补齐完整调度契约、健康/重试/暂停连续性与验证证据；最新 CI 全部成功。若主分支前进导致合并状态变化，须先合并最新 `origin/main` 再重新跑门禁。
+
+### 调度最终优化与复审（2026-09-27）
+
+- 在 `5c3e89364` 的探测容量、未知采样与恢复分母修复基础上，补齐本轮发现的闭环问题：Explain 与实时派发统一空 reasoning 为 `default`；拨号尚未建立连接的失败标记为 `not_sent/proven_not_sent`，不会误计真实调用；已观察终态先写入 PostgreSQL terminal intent，再结算，后台每轮最多补偿100条并报告首个失败；新增迁移258为未结算 terminal intent 建立部分索引，避免长期扫描放大。
+- 新增 PostgreSQL 结算意图单元覆盖、迁移 checksum 条目与服务/调度验证；不改变旧 `legacy` 默认，不操作 `/xy2/xy2api`、生产数据库或真实上游。
+- 已观察验证：`go test ./internal/scheduling ./migrations -count=1` PASS；`go test ./internal/service -count=1` PASS（157.082s）；`go test ./internal/scheduling -race -count=1` PASS；`git diff --check` PASS。首次迁移 checksum 错误为清单计算命令未按 `strings.TrimSpace` 复现，修正后校验通过，失败输出保留在本轮执行记录。
+- 本轮已在候选分支本地提交（`fix controlled scheduler settlement and explain consistency`）；提交后再次核对 diff、迁移清单与测试，工作树保持干净。没有把本轮代码结果写入旧四角色归档。
+
+### 智能可控调度已提交及独立复审（2026-09-27，前置记录）
+
+- 已按用户要求先本地提交实现：分支 feat/controlled-account-scheduling，提交 2a9c62f0c7bf1d92cb677f0ea460be2c253a7b9b，149个文件；未推送/合并/部署，原 /xy2/xy2api 不变。提交源码与既有 scheduling_final_02 交付包一致。此前“没有Git提交”描述属于提交前状态。
+- 随后只读复审确认4项P1：确定未连接成功仍成为unknown并永久占容量；PG暂时结算失败丢失已知终态；probe满不即时跨层；全慢环境让UNKNOWN/HALF_OPEN长期拿不到采样。前两项在legacy也真实复现，因此当前提交不应直接生产部署，即使保持legacy。
+- 另确认2项P2：1:99的小权重账号恢复份额由0.1%膨胀到10%；默认Explain空effort与真实default不同，实际A2但预览A1。已有真实PG/Redis/local HTTP或现有Go核心/Lua最小复现；失败断言保留，不将“复现成功”说成“已修复”。
+- 改进方向合理，优先级/权重分离、总预算、无TPS、人工控制独立和语义提交边界应保留；当时的修复顺序先做发送确定性/可靠结算，再做 probe 容量/恢复采样，然后做恢复分母/Explain 一致性。256KiB 大请求元数据退化、上下文 token 没有生产赋值、恢复继承操作仍属于后续测量边界。
+- 完整前置报告 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/post-commit-review-20260927/REVIEW.md`；本记录提出的问题已由上方最终优化条目处理。四角色继续指向已提交实现，后续验证仍按前缀保留方式追加；不借用旧三态声称新缺陷已修复。
+
+### 智能可控账号调度实现与本地验证（2026-09-27，默认 legacy，未部署，前置记录）
+
+- 用户已批准最终方案并要求边推进边审查。本段记录的是最终优化前的实现阶段；后续提交和复审结果见上方，全部变更仍位于 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work`，原 `/xy2/xy2api` 保持不变。没有推送、生产部署或真实上游付费请求。
+- 新增严格优先级、独立 traffic_weight 与共享 SWRR、pin/fill_first、跨层容量溢出、统一实际 attempt 总账、按模型首语义时间档位、健康与渐进恢复、全慢/UNKNOWN 兜底。TPS 不参与选路；未配置模型延迟阈值时仅观测，不凭空设置统一秒数。升级默认仍是 legacy，不自动改变现有分流。
+- PostgreSQL 控制 epoch 与 dispatch gate、活动票据和幂等结算约束暂停/排空/强停；Redis 共享容量、轮询与重试额度。HTTP/SSE、WS 逐轮、协议转换和 OAuth 重发进入同一预算。强 owner 不能经暂停、删绑定或切回 legacy 偷换账号。迁移 257、策略 CAS、只读 explain、尝试链/分流统计及中文英文管理页面已实现。
+- 独立审查实际复现并修复：响应头重算首字期限侵占后备预算、无参数工具终态漏记语义、派发准备失败误扣次数/重试额度、后备预览忽略本次即将用完的预算、部分 retry JSON 丢失默认值、Gemini/Anthropic 协议与思考档位误归类、暂停 owner 在 legacy 回退误发其他账号。失败原始日志与修复后匹配回归均保留。
+- 全量后端 unit：11,569 顶层 PASS、38 SKIP、62 包 PASS；关键五包 race 通过。最后 owner 窄修之后重新执行相关两包 race（54 顶层 PASS）及生产构建，3,280 个后端源码文件前后哈希一致；最终二进制 SHA256 baf6cf8beb877a60435e6929038f4cf98ac7f1ecd5ede2ef98c88730cbeb0172。前端新增 43 项、相关既有 159 项、类型/定向 lint/Vite 构建通过。不能将较早全量测试冒充最后窄修后的全量重跑。
+- 真实隔离 PostgreSQL/Redis/本地 HTTP 证据覆盖共享 7:3、严格优先级、三次实际调用、暂停竞争、跨节点控制票据、准备失败补偿、owner 保持与 explain 零副作用。79 项矩阵保留原 ID，逐项区分已有证据与完整供应商/多进程/生产灰度待验；没有宣称所有外部场景均验收完成。
+- 操作说明 docs/CONTROLLED_SCHEDULING.md；逐项验收 docs/CONTROLLED_SCHEDULING_ACCEPTANCE.md；字面执行记录与最终不可变源码校验在上述实现目录。四角色继续复用 /xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}，原 IQ 账本按字节保留为前缀；本次源码事务的实际三态、补丁重建与回滚哈希以实现目录 final-transaction-scheduling_final_02/VERIFIED.json 为准，不借用 IQ 事务结果。源码包冻结后不再修改；离线回滚脚本不是在线数据库/控制状态回退指令。
+
+### 账号调度研究与改进设计（2026-09-27，历史设计阶段）
+
+- 当前方案V5：继承V3的TPS完全退出/同级优先和V4暂停排空；新增统一语义首字与正文首字口径、健康H/单次T/总预算D、删失样本和单请求实际attempt总账。建议最多3次、同级2次、同账号1次，首次首字超时后最多再派发1次，第三次须通过时间/重放/重试额度。新增53项设计参考断言PASS；旧V3 52项/V4 37项沿用，业务源码未修改，未来验收79项仍待实施。
+
+- 历史V2（速度判据现已撤销）：用户确认混合使用、按模型分别设置：健康门槛+严格优先级+同级权重，加入双指标独立判定、迟滞恢复、跨层回切预算和全部低性能兜底；详见原研究目录SMART_CONTROLLED_V2.md。39项参考仿真断言通过，业务实现验收仍待完成，演示8秒/20TPS不可当作生产默认值。
+
+- 基于 `/xy2/xy2api`、`fix/iq-current-health`、`e9b546bf77326e5253728127e50a2af050f18679`，检索 CLIProxyAPI、New API、LiteLLM、APISIX、Kong、Envoy、Higress 官方资料；前两者固定源码提交。报告和诊断：`/xy2/artifacts/iq-candy-20260927/scheduling-research-20260927/REPORT.md`。
+- 确认高级调度存在软优先级归一化、Top-K分数减最小值加1的随机权重、粘性提前返回/前置、固定会话种子、LoadFactor容量分母、展示与实时质量统计不同等机制。20,000会话中较低分账号仍占33.505%；同一固定会话100/100仍选低分。不能据此唯一归因某条生产请求。
+- 隔离无网络容器执行7个新诊断和15个既有定向回归，共22个顶层测试通过，exit0；日志、命令、输入和结果已保存。通过是复现当前行为，不是已修复。未改业务源码、未访问生产或调用真实上游。
+- 建议严格优先级分层+层内SWRR，单独提供pin/fallback拒绝、fill first和显式adaptive；拆分traffic_weight、硬并发、负载容量基准、软亲和和强协议owner；补explain、版本、多实例共享状态及17项后续验收。配置样例仅是设计提案，不可直接导入当前版本。
+- 研究补充原四角色，保留并行PR交付更新；最终哈希、路径重开和源码稳定性见FINAL_CHECK.json。下一阶段按报告P0/P1实施，尚未编写新调度实现。
+
+
 ### 糖果检测当前健康与长响应兼容（2026-09-27，PR #65）
 
 - 原始副本 `/xy2/xy2api-original` 保持 `1cf9708e73c8c189968016852b07082e1c30e187`；实现提交 `e9b546bf77326e5253728127e50a2af050f18679` 已推送至 `fix/iq-current-health`，[PR #65](https://github.com/liulixin-lex/xy2api/pull/65) 面向 main 开放评审。发布候选位于 `/xy2/artifacts/iq-candy-20260927/pr-source`，保留主工作区并行研究记录；未合并、未发版、未部署。
@@ -274,6 +320,16 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
+- `20260927-controlled-scheduling-postcommit-review`：先提交实现并完成独立复审，4项P1/2项P2有实证，业务修复尚未执行；完整报告见 post-commit-review-20260927/REVIEW.md。原源码保持，未推送或部署。
+
+- `20260927-controlled-scheduling-implementation`：代码实现、独立审查修复及本地验证完成，源码和文档冻结；最终四角色事务按实现目录 CHECKPOINT.json 连续执行，最终结果以 final-transaction-scheduling_final_02/{VERIFIED.json,PUBLISHED.json} 为准。TARGET=/xy2/xy2api；副本=/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work。保留 legacy 默认；未进行生产灰度，不应跳过逐模型配置与上线验收。
+
+
+
+
+
+
 
 - `20260927-iq-current-health-pr`：实现已提交、推送并创建 PR #65；候选和原四角色已更新，完整三态、远端 head 与 CI 状态见固定账本最新事件。未合并、未发版、未部署。
 
@@ -1077,3 +1133,54 @@ pnpm --dir frontend run build
 - 发布前发现主工作区新增并行调度研究记录，保留其内容；从已验收提交建立隔离发布候选，PR 仅含本轮 IQ 实现、测试和交接。业务代码沿用已通过的验证结果。
 - 沿用 `/xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}`；同输入三态、补丁重建、回滚哈希与角色重开结果按最新 `TRANSACTION_VERIFIED` 事件核验。远端最终提交和 CI 查询结果见 `PR_RESULT.json` 与验证账本，不能把推送成功当作 CI 通过。
 - 本轮没有合并 PR、发版、部署或生产数据写入。
+
+### 2026-09-27 — `20260927-account-scheduling-research` — 研究与方案完成
+
+- 完成7个代表性网关官方策略对照及当前调度代码路径分析；明确最高动态评分不等于强制选择，LoadFactor不等于流量比例，粘性/owner/准入优先于普通排序。
+- 新增7个隔离诊断并执行15个既有定向回归，共22个顶层测试通过、exit0、stderr为空。实际观察到高分66.495%/低分33.505%、固定会话100次低分选择、100分被1分粘性前置、优先级差距归一化、显示排序反转和Top-K排除空闲候选。
+- 提交研究产物REPORT.md、POLICY_EXAMPLES.json、ACCEPTANCE_MATRIX.json、固定来源和完整执行记录至 `/xy2/artifacts/iq-candy-20260927/scheduling-research-20260927/`；没有提交Git变更或改业务源码。保留其他任务的PR交接内容，原账本仅追加本轮证据。
+- 下一步为按P0/P1实现可解释控制、pin、严格分层和SWRR；多实例、协议续接、迁移和17项验收均为后续工作，不能宣称已完成。
+
+### 2026-09-27 — `20260927-smart-controlled-scheduling` — 第二版方案与参考仿真完成
+
+- 用户提出既智能又可控，并确认混合使用、按模型分别设置。方案明确首字与输出速度分别达标，健康时严格遵守人工优先级和同级权重；持续不达标才降级，冷却、合格探测及逐步份额回升后自动回切。
+- 补充所有层低性能时的有边界尽力服务、优先级容差及可选严格/快速失败模式；全部硬不可用不绕过。区分软健康门槛、单次首字超时、首次输出前总预算和整流超时；已输出/副作用不明/强owner约束下不透明重放。
+- 写入原研究目录SMART_CONTROLLED_V2.md、SMART_POLICY_V2.json及参考仿真；39项确定性断言通过、exit0、stderr为空，不是Go/Redis/生产验收。此前22项Go诊断只引用旧结果，新增20项真实实现验收仍为待执行。
+- 主报告、策略示例和验收矩阵已同步；保留原业务源码及四角色，原账本追加证据。下一步需实现按模型观测、影子校准与健康状态机；未部署、未调用真实上游、未启用付费探测。
+
+### 2026-09-27 — 调度方案V3/V4 — 重试、TPS退出与平滑暂停设计完成
+
+- 保留混合模型独立门槛；按照用户要求移除TPS、token间隔和速度样本对选路/降级/兜底/恢复的影响。可重试错误先同级其他账号、再按显式单级/全局预算跨级，失败账号不重复；请求级错误、已提交、owner禁止及预算终止不继续重试。
+- V3参考仿真52项断言exit0；用户随后增加暂停需求，原已完成结果直接沿用，不重复执行。V4补dispatch线性化边界、在途请求完成、预约重选、WS轮次门、强owner有界延续、手动控制优先、旧epoch保护和usage幂等。
+- 暂停当前代码存在布尔开关、outbox/快照及选中后DB复检，但未等同于完整排空状态机；response-owner因不可调度删除绑定的分支和母/影暂停范围已记录，未声称生产复现。
+- 当前主报告指向SMART_CONTROLLED_V4.md和SMART_CONTROLLED_V3.md；V2标历史，验收矩阵速度相关项已撤销并补新要求。原四角色重开，原账本追加设计证据；业务源码未改、未调用真实上游或部署。
+
+### 2026-09-27 — `20260927-scheduling-v5-ttft-retry` — 首字与重试预算方案完成
+
+- 目标仍为 `/xy2/xy2api`，分支 `fix/iq-current-health`、HEAD `e9b546bf77326e5253728127e50a2af050f18679`。继续用户的方案讨论，未实现新网关调度、未调用真实上游、未部署。
+- 对照官方NVIDIA AIPerf、Envoy与AWS资料，区分首事件/首语义/首正文及用户整体等待；确认Anthropic部分路径首事件计时、现有首输出超时普通/高思考分档和30秒最小校验；同账号/OAuth deadline与换号循环不能各自增加重试额度。
+- 更新研究目录 `SMART_CONTROLLED_V5.md`、`SMART_POLICY_V5.json`、主报告、配置示例和未来验收。健康H、单次T、总预算D分离；按模型配置，TPS不参与；最多3次为可配置上限，首次首字超时后只再派发1次，第三次需剩余有效窗口、合法候选与共享重试额度。50项新参考断言PASS，exit0且stderr为空，非网关验收。
+- 验证命令：`python3 /xy2/artifacts/iq-candy-20260927/scheduling-research-20260927/ttft_retry_v5_simulation.py`；字面输出与命令见V5_COMMAND_EXECUTION.json。源码稳定性、固定四角色重开与历史三态由SMART_POLICY_V5_FINAL_CHECK.json记录。原归档/补丁/回滚脚本保持，账本仅追加；旧V3/V4仿真不重跑。
+- 两次准备性读取错误（不存在的glob退出2、Python拼接换行语法错误退出1）均已修正读取命令；不涉及业务写入或测试失败，错误及修正记录保留。下一阶段按V5的P0/P1实施，生产阈值须真实样本校准；当前配置不能直接使用假想8秒/12秒示例。
+- 本轮补充边界：已知无重放资格/重试令牌，或当前会用掉最后一枚令牌时不预留不存在的后备。首轮50项记录保留于v5-reference-run1，新增3项后最终53项参考断言PASS；未增加生产/Go测试。
+
+
+### 2026-09-27 — 智能可控调度实现、独立审查与源码冻结
+
+- 承接已批准最终方案，在隔离副本实现控制内核、共享分流/重试额度、语义首字与健康恢复、最终派发门、暂停排空、协议 owner 保护和管理页面；新增迁移 257，已发布 SQL 不改写。默认 legacy，无生产开关、数据或远端 Git 操作。
+- 三个并行实现/审查角色与主执行者持续回看已写代码，先用真实回归保留失败，再修复期限延长、重复记账、补偿、无效后备预留、部分 JSON 默认、协议分档及 legacy 强 owner 绕过。最后一个缺陷在暂停 owner A 时曾真实误发本地备选 B 一次，修复后原六项输入及扩展回归通过；请求 body 与 owner 不被偷偷重写。
+- 后端全量 unit 11,569 顶层 PASS / 38 SKIP / 62 包；关键五包 race PASS。最后 owner 窄修后的两包 54 项 race 与生产构建 exit0，3280 个源码哈希前后相同。前端新增 43 项及相关既有 159 项、类型/定向 lint/生产构建通过。真实 PostgreSQL/Redis/本地 HTTP 及原生 WS 定向证据详见 CONTROLLED_SCHEDULING_ACCEPTANCE.md；无付费合成探测或真实供应商结论。
+- 实现目录为 /xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927；新源码三态使用已成功的本项目原生诊断命令，相同输入保留 legacy 行为，新受控模式另有 7:3/严格优先级与故障回归。最终补丁重建、独立副本回滚、原文件逐一哈希和四角色重开结果由该目录 final-transaction-scheduling_final_02 的 VERIFIED.json/PUBLISHED.json 记录，旧 IQ 三态不作为本次证明。
+- 此文档在最终源码打包前冻结。所有外部环境待验项、逐模型阈值校准及生产灰度明确保留在验收矩阵；不能把本地通过表述为已上线或所有供应商全场景通过。完整原始日志保留在外部账本，不写入记忆。
+
+- 首轮源码事务 scheduling_final_01 的 stage/verify/publish 已实际 exit0 并完整保留。最终只读复核纠正一处说明：notification_warning 仅用于强制停止的 Redis 取消通知失败，普通暂停依赖 PostgreSQL gate/outbox，不同步返回该告警。仅修订运行说明与本记忆的交付身份，业务源码哈希不变；后继 scheduling_final_02 重新封装、执行匹配轻量三态并逐字节继承01账本，不重跑已成功的全量源码验证。
+
+- 文档后继事务的归档守卫实际发现01包未包含被 docs/* 忽略的两份新文档，v1 stage exit1 已保留，未覆盖01。现仅给 .gitignore 添加两条精确文档白名单；02必须完整纳入运行说明及79项验收映射，不能把未打包文档算作01交付内容。复核01含全部3280个后端源文件及所有冻结前端源，哈希无缺漏；业务代码不变。
+
+
+### 2026-09-27 — 调度实现先提交、后独立复审
+
+- 实际本地提交2a9c62f0c7bf1d92cb677f0ea460be2c253a7b9b，分支feat/controlled-account-scheduling；首次提交因Git身份缺失exit128，使用仅本次命令的Codex本地身份后成功，未改全局或仓库身份配置；原始失败与成功命令均保留。
+- 三角色并行只读反证审查加ROOT协议边界验证，发现并证实R1–R6（4 P1/2 P2）：发送确定性、终态持久化、probe容量溢出、全慢恢复饥饿、回流分母、Explain请求档不一致。全部报告给出具体源码行、触发、影响、实际命令结果与建议，没有在本轮暗改业务修复。
+- 两个控制缺陷使用真实隔离PostgreSQL/Redis/local TCP/HTTP，期望恢复的测试exit1；UI一致性测试exit1；策略缺陷通过断言现状复现，exit0不表示已修复。原语义/元数据定向回归exit0，新增256KiB边界观察exit0。测试夹具清理，原工作目录和生产服务未修改。
+- 结论为方向合理、故障闭环未完成，当前不建议生产部署（legacy也受两项P1影响）。先修容量与可靠结算，再修恢复与解释一致性；业务实现仍为2a9c62f，当前变更仅交接文档。完整证据位于 scheduling-implementation-20260927/post-commit-review-20260927，既有四角色/原三态保留并追加审查账本。

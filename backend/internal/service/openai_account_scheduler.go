@@ -2171,6 +2171,19 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	if s.controlledScheduling != nil {
+		request, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, requestedModel, sessionHash)
+		if err != nil {
+			return nil, OpenAIAccountScheduleDecision{}, err
+		}
+		if enabled {
+			return s.selectControlledOpenAI(ctx, request, OpenAIAccountScheduleRequest{GroupID: groupID, PreviousResponseID: previousResponseID, SessionHash: sessionHash, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequiredTransport: requiredTransport, RequiredCapability: requiredCapability, RequiredImageCapability: requiredImageCapability, RequireCompact: requireCompact, Platform: platform, PreviousResponseCanMove: previousResponseCanMove})
+		}
+
+		if selection, decision, handled, e := s.selectLegacyControlledOwner(ctx, OpenAIAccountScheduleRequest{GroupID: groupID, PreviousResponseID: previousResponseID, SessionHash: sessionHash, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequiredTransport: requiredTransport, RequiredCapability: requiredCapability, RequiredImageCapability: requiredImageCapability, RequireCompact: requireCompact, Platform: platform}); handled {
+			return selection, decision, e
+		}
+	}
 	return s.selectAccountWithQualityRouting(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 }
 
@@ -2518,6 +2531,16 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Account, model string, success bool, firstTokenMs *int, observedErr ...error) bool {
+	return s.ReportOpenAIAccountScheduleResultWithContext(context.Background(), account, model, success, firstTokenMs, observedErr...)
+}
+
+// ReportOpenAIAccountScheduleResultWithContext preserves the legacy reporting
+// entrypoint, but controlled requests use only their normalized terminal observer.
+// Credential, quota and provider Retry-After handlers remain independent.
+func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultWithContext(ctx context.Context, account *Account, model string, success bool, firstTokenMs *int, observedErr ...error) bool {
+	if ControlledSchedulingEnabled(ctx) {
+		return false
+	}
 	if account == nil {
 		return false
 	}
@@ -2525,16 +2548,16 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	healthTripped := false
 	if s != nil && s.rateLimitService != nil {
 		if success {
-			s.rateLimitService.ObserveOpenAIAPIKeyHealthSuccess(context.Background(), account)
+			s.rateLimitService.ObserveOpenAIAPIKeyHealthSuccess(ctx, account)
 		} else if len(observedErr) > 0 && observedErr[0] != nil {
-			healthTripped = s.rateLimitService.ObserveOpenAIAPIKeyHealthFailure(context.Background(), account, observedErr[0])
+			healthTripped = s.rateLimitService.ObserveOpenAIAPIKeyHealthFailure(ctx, account, observedErr[0])
 		}
 	}
 	if success {
 		s.openaiOAuth429RetryStartedAt.Delete(accountID)
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
-	scheduler := s.getOpenAIAccountScheduler(context.Background())
+	scheduler := s.getOpenAIAccountScheduler(ctx)
 	if scheduler == nil {
 		return healthTripped
 	}
@@ -2545,6 +2568,9 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 // ObserveOpenAIAccountHealthFailure records failures that cannot reach the
 // scheduler-result path, for example after semantic response bytes were sent.
 func (s *OpenAIGatewayService) ObserveOpenAIAccountHealthFailure(ctx context.Context, account *Account, observedErr error) bool {
+	if ControlledSchedulingEnabled(ctx) {
+		return false
+	}
 	if s == nil || s.rateLimitService == nil || account == nil || observedErr == nil {
 		return false
 	}

@@ -39,6 +39,10 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		return nil
 	}
 	connID := strings.TrimSpace(lease.ConnID())
+	// Explicit mode never sends hidden generate=false requests outside its ledger.
+	if ControlledSchedulingEnabled(ctx) {
+		return nil
+	}
 	if !s.isOpenAIWSGeneratePrewarmEnabled() {
 		return nil
 	}
@@ -340,13 +344,13 @@ func (s *OpenAIGatewayService) handleOpenAIWSFailureAccountSideEffects(ctx conte
 	status := openAIStreamFailureStatus(payload, message)
 	switch status {
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
+		s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, nil, account, payload, message, headers, canonicalModel)
 		return true
 	case http.StatusForbidden:
 		if !openAIStream403AccountFailure(payload, message) {
 			return false
 		}
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
+		s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, nil, account, payload, message, headers, canonicalModel)
 		return true
 	}
 
@@ -553,7 +557,12 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil || account == nil {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		// A transient lookup failure must not destroy strong response ownership.
+		return 0, nil, "", nil
+	}
+	var continuationAllowed bool
+	account, continuationAllowed = s.controlledOwnerForContinuation(ctx, account)
+	if !continuationAllowed {
 		return 0, nil, "", nil
 	}
 	// OAuth/SetupToken continuation state lives on the WSv2 session and cannot
@@ -593,7 +602,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if s.schedulerSnapshot != nil && s.accountRepo != nil {
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
 		if latestErr != nil || latest == nil {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+			return 0, nil, "", nil
+		}
+		latest, continuationAllowed = s.controlledOwnerForContinuation(ctx, latest)
+		if !continuationAllowed {
 			return 0, nil, "", nil
 		}
 		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {

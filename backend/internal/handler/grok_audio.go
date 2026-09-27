@@ -269,6 +269,9 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			h.recordGrokVoiceUsage(c, apiKey, account, subscription, endpoint, body, result)
 			return
 		}
+		if handleControlledSchedulingStop(c, forwardErr) {
+			return
+		}
 		var failoverErr *service.UpstreamFailoverError
 		if errors.As(forwardErr, &failoverErr) && failoverErr.ShouldRetryNextAccount() {
 			failed[account.ID] = struct{}{}

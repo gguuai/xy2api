@@ -526,6 +526,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/scheduling',
+    name: 'AdminScheduling',
+    component: () => import('@/views/admin/SchedulingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Account Scheduling',
+      titleKey: 'admin.scheduling.title',
+      descriptionKey: 'admin.scheduling.description'
+    }
+  },
+  {
     path: '/admin/plugins',
     name: 'AdminPlugins',
     component: () => import('@/views/admin/PluginsView.vue'),

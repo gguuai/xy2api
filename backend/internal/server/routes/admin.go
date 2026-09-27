@@ -56,6 +56,15 @@ func RegisterAdminRoutes(
 
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
+		if h.Admin.Scheduling != nil {
+			admin.GET("/scheduling/policies", h.Admin.Scheduling.GetPolicy)
+			admin.PUT("/scheduling/policies", h.Admin.Scheduling.PutPolicy)
+			admin.POST("/scheduling/explain", h.Admin.Scheduling.Explain)
+			admin.GET("/scheduling/requests/:request_id/attempts", h.Admin.Scheduling.ListRequestAttempts)
+			admin.GET("/scheduling/stats", h.Admin.Scheduling.GetStatistics)
+			admin.GET("/accounts/:id/scheduling-control", h.Admin.Scheduling.GetControl)
+			admin.POST("/accounts/:id/scheduling-control", h.Admin.Scheduling.Control)
+		}
 
 		// 公告管理
 		registerAnnouncementRoutes(admin, h)
