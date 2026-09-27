@@ -2,6 +2,7 @@ package scheduling
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"sync"
@@ -171,6 +172,78 @@ func TestRecoveryShareUsesConfiguredTarget(t *testing.T) {
 		t.Fatal(ds)
 	}
 }
+
+func TestRecoveryDenominatorIncludesTemporarilyDegradedPeer(t *testing.T) {
+	now := time.Now()
+	req := SelectionRequest{
+		Policy:     Policy{Model: "m", Accounts: []AccountRule{{AccountID: 1, Weight: 1}, {AccountID: 2, Weight: 99}, {AccountID: 3, Weight: 1}}},
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 0), candidate(3, 10)},
+		Profile:    profile(), Now: now,
+	}
+	states := map[int64]HealthSnapshot{
+		1: {State: HealthRecovering, RecoveryStage: 0, UpdatedAtMS: now.UnixMilli()},
+		2: {State: HealthDegraded, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Minute).UnixMilli()},
+		3: healthy(now),
+	}
+	ds, err := Evaluate(req, states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := shares(ds)
+	closeTo(t, m[1], .001)
+	closeTo(t, m[3], .999)
+}
+
+func TestUnknownProbeCompetesWithDegradedPool(t *testing.T) {
+	now := time.Now()
+	req := SelectionRequest{
+		Policy:     Policy{Model: "m", Accounts: []AccountRule{{AccountID: 1, Weight: 1}, {AccountID: 2, Weight: 1}}},
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 10)},
+		Profile:    profile(), Now: now,
+	}
+	states := map[int64]HealthSnapshot{
+		1: {State: HealthUnknown, UpdatedAtMS: now.UnixMilli()},
+		2: {State: HealthDegraded, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Minute).UnixMilli()},
+	}
+	ds, err := Evaluate(req, states)
+	if err != nil || len(ds) != 2 {
+		t.Fatal(ds, err)
+	}
+	m := shares(ds)
+	closeTo(t, m[1], .1)
+	closeTo(t, m[2], .9)
+	for _, d := range ds {
+		if d.AccountID == 1 && (!d.Probe || d.Reason != "unknown_probe") {
+			t.Fatal(ds)
+		}
+	}
+}
+
+func TestStrictPriorityAllowsSameTierRecoveryProbeOnly(t *testing.T) {
+	now := time.Now()
+	req := SelectionRequest{
+		Policy:     Policy{Model: "strict-probe", AllDegraded: AllDegradedStrictPriority, Accounts: []AccountRule{{AccountID: 1, Weight: 9}, {AccountID: 2, Weight: 1}}},
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 0), candidate(3, 10)}, Profile: profile(), Now: now,
+	}
+	states := map[int64]HealthSnapshot{
+		1: {State: HealthDegraded, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Minute).UnixMilli()},
+		2: {State: HealthHalfOpen, UpdatedAtMS: now.UnixMilli()},
+		3: {State: HealthUnknown, UpdatedAtMS: now.UnixMilli()},
+	}
+	ds, err := Evaluate(req, states)
+	if err != nil || len(ds) != 2 {
+		t.Fatal(ds, err)
+	}
+	m := shares(ds)
+	closeTo(t, m[1], .9)
+	closeTo(t, m[2], .1)
+	for _, d := range ds {
+		if d.AccountID == 3 {
+			t.Fatal("strict priority crossed into a lower-tier probe", ds)
+		}
+	}
+}
+
 func TestHealthCooldownAndRecovery(t *testing.T) {
 	p := profile()
 	now := time.Now()
@@ -461,6 +534,90 @@ func TestUnknownProbeAndRedisHealth(t *testing.T) {
 	m := shares(ds)
 	closeTo(t, m[2], .05)
 	closeTo(t, m[1], .95)
+}
+
+func TestBusyHighTierProbeOverflowsToLowerTier(t *testing.T) {
+	rt, _ := testRuntime(t)
+	ctx := context.Background()
+	req := SelectionRequest{
+		Policy: Policy{Model: "probe-overflow"}, Profile: profile(),
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 10)},
+	}
+	first, err := rt.Select(ctx, req)
+	if err != nil || first.AccountID != 1 || !first.Probe {
+		t.Fatal(first, err)
+	}
+	second, err := rt.Select(ctx, req)
+	if err != nil || second.AccountID != 2 {
+		t.Fatal(second, err)
+	}
+	if err = rt.ReleaseSelection(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err = rt.ReleaseSelection(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBusyProbeHonorsOverflowWait(t *testing.T) {
+	rt, _ := testRuntime(t)
+	ctx := context.Background()
+	req := SelectionRequest{
+		Policy: Policy{Model: "probe-overflow-wait", Overflow: OverflowWait}, Profile: profile(),
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 10)},
+	}
+	first, err := rt.Select(ctx, req)
+	if err != nil || first.AccountID != 1 || !first.Probe {
+		t.Fatal(first, err)
+	}
+	defer rt.ReleaseSelection(ctx, first)
+	if _, err = rt.Select(ctx, req); !errors.Is(err, ErrCapacity) {
+		t.Fatal("busy probe crossed an overflow-wait boundary", err)
+	}
+}
+
+func TestBusyProbeTriesSameTierBeforeOverflowWait(t *testing.T) {
+	rt, _ := testRuntime(t)
+	ctx := context.Background()
+	req := SelectionRequest{
+		Policy: Policy{Model: "probe-same-tier-wait", Overflow: OverflowWait}, Profile: profile(),
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 0), candidate(3, 10)},
+	}
+	first, err := rt.Select(ctx, req)
+	if err != nil || first.AccountID != 1 || !first.Probe {
+		t.Fatal(first, err)
+	}
+	defer rt.ReleaseSelection(ctx, first)
+	second, err := rt.Select(ctx, req)
+	if err != nil || second.AccountID != 2 || !second.Probe {
+		t.Fatal(second, err)
+	}
+	defer rt.ReleaseSelection(ctx, second)
+	if _, err = rt.Select(ctx, req); !errors.Is(err, ErrCapacity) {
+		t.Fatal("busy same-tier probes crossed the wait boundary", err)
+	}
+}
+
+func TestRecoveringSelectionUsesProbeLease(t *testing.T) {
+	rt, _ := testRuntime(t)
+	ctx := context.Background()
+	req := SelectionRequest{Policy: Policy{Model: "recovering-probe"}, Profile: profile(), Candidates: []Candidate{candidate(1, 0)}}
+	now := time.Now()
+	state := HealthSnapshot{State: HealthRecovering, RecoveryStage: 0, UpdatedAtMS: now.UnixMilli()}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = rt.store.client.Set(ctx, HealthRedisKey(1, req.Policy.Model, req.Profile, "", "", ""), raw, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := rt.Select(ctx, req)
+	if err != nil || d.AccountID != 1 || !d.Probe {
+		t.Fatal(d, err)
+	}
+	if err = rt.ReleaseSelection(ctx, d); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCanRetryIsReadOnlyAndNoProfileDoesNotThrottle(t *testing.T) {

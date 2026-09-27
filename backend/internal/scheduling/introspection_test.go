@@ -70,6 +70,46 @@ func TestInspectionSkipsBusyProbeWithoutReserving(t *testing.T) {
 	require.ErrorIs(t, e, ErrCapacity)
 	require.Equal(t, before, m.Dump())
 }
+
+func TestInspectionReevaluatesBusyProbeAcrossBestEffortTiers(t *testing.T) {
+	r, m := testRuntime(t)
+	ctx := context.Background()
+	now := time.Now()
+	req := SelectionRequest{
+		Policy: Policy{Enabled: true, Model: "probe-explain-overflow"}, Profile: profile(), Now: now,
+		Candidates: []Candidate{candidate(1, 0), candidate(2, 10)},
+	}
+	degraded := HealthSnapshot{State: HealthDegraded, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Minute).UnixMilli()}
+	raw, err := json.Marshal(degraded)
+	require.NoError(t, err)
+	require.NoError(t, r.store.client.Set(ctx, HealthRedisKey(2, req.Policy.Model, req.Profile, "", "", ""), raw, 0).Err())
+	options, err := r.Preview(ctx, req)
+	require.NoError(t, err)
+	require.Len(t, options, 2)
+	pool := allocationKey(req)
+	wire := make([]map[string]any, 0, len(options))
+	for _, d := range options {
+		wire = append(wire, map[string]any{"id": d.AccountID, "w": d.EffectiveShare})
+	}
+	sigRaw, err := json.Marshal(wire)
+	require.NoError(t, err)
+	require.NoError(t, r.store.client.HSet(ctx, pool+":scores", "__sig", digest(string(sigRaw)), "1", "1", "2", "-1").Err())
+	probe, err := r.store.acquireProbe(ctx, req, 1, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, probe)
+	defer r.store.ReleaseProbe(ctx, probe)
+	before := m.Dump()
+	peek, err := r.InspectSelection(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, peek.Selected)
+	require.Equal(t, int64(2), peek.Selected.AccountID)
+	require.Equal(t, before, m.Dump())
+	actual, err := r.Select(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), actual.AccountID)
+	require.NoError(t, r.ReleaseSelection(ctx, actual))
+}
+
 func TestNextRecoveryDoesNotReviveExcludedAccounts(t *testing.T) {
 	r, m := testRuntime(t)
 	ctx := context.Background()

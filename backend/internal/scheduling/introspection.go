@@ -187,15 +187,29 @@ func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (S
 	if err != nil {
 		return out, err
 	}
-	options := append([]Decision(nil), out.Options...)
-	sharedProbe := false
-	for _, d := range options {
-		if d.HealthState == HealthHealthy {
-			sharedProbe = true
-			break
+	policy := NormalizePolicy(req.Policy)
+	if req.Attempted != nil {
+		attempted := make(map[int64]bool, len(req.Attempted))
+		for id, value := range req.Attempted {
+			attempted[id] = value
 		}
+		req.Attempted = attempted
 	}
-	for len(options) > 0 {
+	options := append([]Decision(nil), out.Options...)
+	busyProbe := false
+	for {
+		// Select re-evaluates after a busy probe. Explain follows the same pure
+		// transition so it predicts lower-tier overflow without reserving state.
+		if len(options) == 0 {
+			var e error
+			options, e = Evaluate(req, states)
+			if e != nil {
+				if busyProbe && e == ErrNoCandidate {
+					return out, ErrCapacity
+				}
+				return out, e
+			}
+		}
 		chosen, e := state.peek(options)
 		if e != nil {
 			return out, e
@@ -203,6 +217,13 @@ func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (S
 		if !chosen.Probe {
 			out.Selected = &chosen
 			return out, nil
+		}
+		sharedProbe := false
+		for _, d := range options {
+			if d.HealthState == HealthHealthy {
+				sharedProbe = true
+				break
+			}
 		}
 		available, e := r.store.inspectProbeAvailable(ctx, req, chosen.AccountID, sharedProbe)
 		if e != nil {
@@ -212,15 +233,19 @@ func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (S
 			out.Selected = &chosen
 			return out, nil
 		}
-		next := make([]Decision, 0, len(options)-1)
-		for _, d := range options {
-			if d.AccountID != chosen.AccountID {
-				next = append(next, d)
-			}
+		if policy.Mode == ModePin && !policy.PinFallback {
+			return out, ErrNoCandidate
 		}
-		options = next
+		if policy.Overflow == OverflowWait && !hasSamePriorityOption(options, chosen) && !(policy.Mode == ModePin && policy.PinFallback) {
+			return out, ErrCapacity
+		}
+		if req.Attempted == nil {
+			req.Attempted = map[int64]bool{}
+		}
+		req.Attempted[chosen.AccountID] = true
+		busyProbe = true
+		options = nil
 	}
-	return out, ErrCapacity
 }
 
 // NextRecovery cannot revive paused, zero-weight, excluded or already-tried accounts.
