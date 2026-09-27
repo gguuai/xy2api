@@ -879,10 +879,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && !simpleModeKeyRateLimitOnly {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		if e := writeSchedulingUsageLog(ctx, s.usageLogRepo, usageLog, "service.gateway"); e != nil {
+			return e
+		}
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
-		return nil
+		return acknowledgeSchedulingUsage(ctx, s.controlledScheduling, account.ID)
 	}
 
 	// 配额平台由 handler 在请求 ctx 内经 QuotaPlatform() 算定并通过 input 传入；
@@ -915,9 +917,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
 	}
-	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	if e := writeSchedulingUsageLog(ctx, s.usageLogRepo, usageLog, "service.gateway"); e != nil {
+		return e
+	}
 
-	return nil
+	return acknowledgeSchedulingUsage(ctx, s.controlledScheduling, account.ID)
 }
 
 // calculateRecordUsageCost 根据请求类型计算费用。

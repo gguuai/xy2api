@@ -17,6 +17,7 @@
             @create="showCreate = true"
           >
             <template #after>
+              <RouterLink to="/admin/scheduling" class="btn btn-secondary">{{ t('admin.scheduling.title') }}</RouterLink>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -292,9 +293,12 @@
             </div>
           </template>
           <template #cell-schedulable="{ row }">
+            <div class="flex flex-col items-start gap-1.5">
             <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
               <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
             </button>
+              <button class="text-xs text-primary-600 hover:underline" @click="schedulingControlAccount = row">{{ schedulingControls[row.id] ? t('admin.scheduling.states.' + schedulingControls[row.id].state) : t('admin.scheduling.controlTitle') }}</button>
+            </div>
           </template>
           <template #cell-iq_check="{ row }">
             <IQCheckCell :account="row" :busy="togglingIQCheck.has(row.id)" @toggle="handleToggleIQCheck(row)" @records="iqRecordsAccount = row" />
@@ -453,6 +457,7 @@
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
+    <AccountSchedulingControlDialog :show="schedulingControlAccount !== null" :account="schedulingControlAccount" @close="schedulingControlAccount = null" @updated="handleSchedulingControlUpdated" @observed="control => schedulingControls[control.account_id] = control" />
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
@@ -512,6 +517,8 @@ import AccountTableActions from '@/components/admin/account/AccountTableActions.
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import IQCheckCell from '@/components/account/IQCheckCell.vue'
+import AccountSchedulingControlDialog from '@/components/account/AccountSchedulingControlDialog.vue'
+import type { AccountSchedulingControl } from '@/types/scheduling'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
@@ -543,6 +550,12 @@ const IQCheckResultsModal = defineAsyncComponent(() => import('@/components/admi
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const schedulingControlAccount = ref<{ id: number; name: string } | null>(null)
+const schedulingControls = ref<Record<number, AccountSchedulingControl>>({})
+const handleSchedulingControlUpdated = (control: AccountSchedulingControl) => {
+  schedulingControls.value[control.account_id] = control
+  void reload()
+}
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])

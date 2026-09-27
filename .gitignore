@@ -158,6 +158,8 @@ docs/*
 !docs/PROJECT_MEMORY.md
 !docs/OPENAI_IQ_CHECK.md
 !docs/IQ_CURRENT_HEALTH.md
+!docs/CONTROLLED_SCHEDULING.md
+!docs/CONTROLLED_SCHEDULING_ACCEPTANCE.md
 !docs/IQ_RELIABILITY_IMPLEMENTATION.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/upstream-sync/

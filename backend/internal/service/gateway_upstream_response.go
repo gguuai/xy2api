@@ -107,6 +107,9 @@ func sseEventIndex(event map[string]any) (int, bool) {
 // 的 400 不是签名缺失问题，retry 任何 thinking 变形都会破坏「原样回传」契约——直接透传
 // 错误给客户端。详见 thinking_protocol.go。
 func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, account *Account, respBody []byte, mappedModel string) bool {
+	if ControlledSchedulingEnabled(ctx) {
+		return false
+	}
 	if !ShouldRectifyThinkingSignatureError(mappedModel) {
 		return false
 	}

@@ -34,7 +34,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	attempt int,
 	lastFailureReason string,
 	agentTaskRecoveryTried *bool,
-) (*OpenAIForwardResult, error) {
+) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
@@ -230,7 +230,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	})
 	if err != nil {
 		var agentDialErr *openAIWSDialError
-		if s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
+		if errors.As(err, &agentDialErr) {
+			if repairErr := s.repairControlledAgentIdentityTask(ctx, account, agentDialErr.StatusCode, agentDialErr.ResponseBody); repairErr != nil { return nil, repairErr }
+		}
+		if !ControlledSchedulingEnabled(ctx) && s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
 			*agentTaskRecoveryTried = true
 			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, account.GetCredential("task_id")); recoveryErr != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
@@ -342,6 +345,20 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if promptErr != nil {
 		return nil, promptErr
 	}
+	controlledTerminal := false
+	controlledDispatch, controlledErr := s.controlledScheduling.beginDispatch(ctx, account.ID, account.Concurrency)
+	if controlledErr != nil {
+		return nil, controlledErr
+	}
+	if controlledDispatch != nil {
+		ctx = controlledDispatch.Context()
+		defer func() {
+			controlledDispatch.Finish("websocket_turn", controlledTerminal, forwardErr)
+			if forwardResult != nil {
+				forwardResult.SchedulingAttemptID = SchedulingAttemptIDFromContext(ctx)
+			}
+		}()
+	}
 	if err := s.performOpenAIWSGeneratePrewarm(
 		ctx,
 		lease,
@@ -356,6 +373,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, err
 	}
 
+	if err := controlledDispatch.MarkSent(); err != nil {
+		return nil, err
+	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, wirePayload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
@@ -496,6 +516,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		frame = append(frame, '\n', '\n')
 		_, wErr := c.Writer.Write(frame)
 		if wErr == nil {
+			controlledDispatch.CommitOutput(message)
 			wroteDownstream = true
 			pendingFlushEvents++
 			flushStreamWriter(forceFlush)
@@ -623,7 +644,12 @@ readLoop:
 			message = normalized
 		}
 
+		controlledDispatch.ObserveFrame(message)
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
+		if eventType == "error" || isOpenAIWSTerminalEvent(eventType) {
+			controlledTerminal = true
+		}
+
 		if eventType == "" {
 			continue
 		}

@@ -851,6 +851,7 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	ProvideControlledSchedulingService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
@@ -1072,4 +1073,23 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 	}
 	aggregator.Start()
 	return aggregator
+}
+
+// ProvideControlledSchedulingService installs shared policy and dispatch gates
+// after normal services exist. Constructors used by isolated tests stay stable.
+func ProvideControlledSchedulingService(db *sql.DB, rdb *redis.Client, accounts AccountRepository, concurrency *ConcurrencyService, openai *OpenAIGatewayService, gateway *GatewayService, gemini *GeminiMessagesCompatService, antigravity *AntigravityGatewayService) *ControlledSchedulingService {
+	s := NewControlledSchedulingService(db, rdb, accounts, concurrency)
+	// Initialize the read-only proxy circuit pointer before services become concurrent.
+	openai.getOpenAIProxyStreamCircuit()
+	s.SetExplainEligibility(openai.ExplainSchedulingEligibility, gateway.ExplainSchedulingEligibility)
+	openai.controlledScheduling = s
+	gateway.controlledScheduling = s
+	gemini.controlledScheduling = s
+	antigravity.controlledScheduling = s
+	openai.httpUpstream = &controlledHTTPUpstream{base: openai.httpUpstream, service: s}
+	gateway.httpUpstream = &controlledHTTPUpstream{base: gateway.httpUpstream, service: s}
+	gemini.httpUpstream = &controlledHTTPUpstream{base: gemini.httpUpstream, service: s}
+	antigravity.httpUpstream = &controlledHTTPUpstream{base: antigravity.httpUpstream, service: s}
+	s.Start()
+	return s
 }

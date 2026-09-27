@@ -75,6 +75,13 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
 
+	if result, controlled, err := s.selectControlledGatewayAccount(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform, hasForcePlatform, false); controlled || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return result.Account, nil
+	}
+
 	// anthropic/gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
 	// 注意：强制平台模式不走混合调度
 	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
@@ -126,6 +133,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			"group_id", derefGroupID(groupID),
 			"model", requestedModel)
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
+
+	if result, controlled, err := s.selectControlledGatewayAccount(ctx, groupID, sessionHash, requestedModel, excludedIDs, "", false, true); controlled || err != nil {
+		return result, err
 	}
 
 	var stickyAccountID int64
@@ -2661,4 +2672,112 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
+}
+
+// selectControlledGatewayAccount preserves the existing hard gates while making
+// explicit allocation independent of legacy sticky, load-factor and LRU scores.
+func (s *GatewayService) selectControlledGatewayAccount(ctx context.Context, groupID *int64, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, platform string, hasForcePlatform, acquire bool) (*AccountSelectionResult, bool, error) {
+	if s.controlledScheduling == nil {
+		return nil, false, nil
+	}
+	if model, ok := ResolvedUpstreamModelFromContext(ctx); ok {
+		requestedModel = model
+	}
+	r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, requestedModel, sessionHash)
+	if err != nil || !enabled {
+		return nil, enabled, err
+	}
+	var group *Group
+	if groupID != nil && s.groupRepo != nil {
+		group, err = s.groupRepo.GetByIDLite(ctx, *groupID)
+		if err != nil {
+			return nil, true, err
+		}
+		if group == nil {
+			return nil, true, ErrGroupNotFound
+		}
+	}
+	if platform == "" {
+		platform, hasForcePlatform, err = s.resolvePlatform(ctx, groupID, group, requestedModel)
+		if err != nil {
+			return nil, true, err
+		}
+	}
+	accounts, useMixed, err := s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	if err != nil {
+		return nil, true, err
+	}
+	ctx = s.withWindowCostPrefetch(ctx, accounts)
+	ctx = s.withRPMPrefetch(ctx, accounts)
+	pool := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		pool = append(pool, &accounts[i])
+	}
+	eligible := func(account *Account) (bool, string) {
+		return s.controlledGatewayEligibility(ctx, account, groupID, group, requestedModel, platform, useMixed)
+	}
+	localExcluded := make(map[int64]struct{}, len(excludedIDs))
+	for id := range excludedIDs {
+		localExcluded[id] = struct{}{}
+	}
+	for i := 0; i < len(pool); i++ {
+		result, e := s.controlledScheduling.selectAccount(ctx, r, pool, eligible, localExcluded, acquire)
+		if e != nil {
+			return nil, true, e
+		}
+		if s.checkAndRegisterSession(ctx, result.Account, sessionHash) {
+			return attachSelectionProfitGate(ctx, result), true, nil
+		}
+		if result.ReleaseFunc != nil {
+			result.ReleaseFunc()
+		}
+		r.mu.Lock()
+		decision := r.Decision
+		r.decisionPending = false
+		r.mu.Unlock()
+		s.controlledScheduling.releaseDecision(decision)
+		localExcluded[result.Account.ID] = struct{}{}
+	}
+	return nil, true, ErrNoAvailableAccounts
+}
+
+func (s *GatewayService) controlledGatewayEligibility(ctx context.Context, account *Account, groupID *int64, group *Group, model, platform string, useMixed bool) (bool, string) {
+	if !s.isAccountSchedulableForSelection(account) {
+		return false, "account_unavailable"
+	}
+	simpleUngrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+	if !simpleUngrouped && !openAIStickyAccountMatchesGroup(account, groupID) {
+		return false, "group_mismatch"
+	}
+	if !s.isAccountAllowedForPlatform(account, platform, useMixed) {
+		return false, "platform_mismatch"
+	}
+	if group != nil && group.RequirePrivacySet && !account.IsPrivacySet() {
+		return false, "privacy_required"
+	}
+	if !s.isGatewayAccountProfitEligible(ctx, account) {
+		return false, "profit_gate"
+	}
+	if model != "" && !s.isModelSupportedByAccountWithContext(ctx, account, model) {
+		return false, "model_unsupported"
+	}
+	if !s.isAccountSchedulableForModelSelection(ctx, account, model) {
+		return false, "model_unavailable"
+	}
+	if !s.isAccountSchedulableForQuota(account) {
+		return false, "quota_exhausted"
+	}
+	if s.isAccountBlockedBySchedulingThreshold(ctx, account) {
+		return false, "scheduling_threshold"
+	}
+	if !s.isAccountSchedulableForWindowCost(ctx, account, false) {
+		return false, "window_cost"
+	}
+	if !s.isAccountSchedulableForRPM(ctx, account, false) {
+		return false, "rpm_limit"
+	}
+	if s.isStickyAccountUpstreamRestricted(ctx, groupID, account, model) {
+		return false, "channel_model_restricted"
+	}
+	return true, "eligible"
 }

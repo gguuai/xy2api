@@ -28,6 +28,7 @@ import (
 	"github.com/liulixin-lex/xy2api/internal/pkg/response"
 	"github.com/liulixin-lex/xy2api/internal/pkg/timezone"
 	"github.com/liulixin-lex/xy2api/internal/pkg/xai"
+	"github.com/liulixin-lex/xy2api/internal/scheduling"
 	"github.com/liulixin-lex/xy2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,7 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 
 // AccountHandler handles admin account management
 type AccountHandler struct {
+	schedulingController    scheduling.SchedulingAdminStore
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService
@@ -2469,6 +2471,10 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
+	legacySchedulable := req.Schedulable
+	if h.schedulingController != nil {
+		legacySchedulable = nil
+	}
 	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
 		AccountIDs:            req.AccountIDs,
 		Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
@@ -2479,7 +2485,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		RateMultiplier:        req.RateMultiplier,
 		LoadFactor:            req.LoadFactor,
 		Status:                req.Status,
-		Schedulable:           req.Schedulable,
+		Schedulable:           legacySchedulable,
 		GroupIDs:              req.GroupIDs,
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
@@ -2506,6 +2512,36 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
+	if h.schedulingController != nil && req.Schedulable != nil {
+		action := "pause"
+		if *req.Schedulable {
+			action = "resume"
+		}
+		successful := make([]int64, 0, len(result.SuccessIDs))
+		for _, id := range result.SuccessIDs {
+			_, controlErr := h.schedulingController.Control(c.Request.Context(), scheduling.ControlCommand{AccountID: id, Scope: scheduling.ScopeAccount, Action: action})
+			if controlErr == nil {
+				successful = append(successful, id)
+				continue
+			}
+			result.Success--
+			result.Failed++
+			result.FailedIDs = append(result.FailedIDs, id)
+			found := false
+			for i := range result.Results {
+				if result.Results[i].AccountID == id {
+					result.Results[i].Success = false
+					result.Results[i].Error = "Other fields updated; scheduling control was not confirmed"
+					found = true
+					break
+				}
+			}
+			if !found {
+				result.Results = append(result.Results, service.BulkUpdateAccountResult{AccountID: id, Success: false, Error: "Scheduling control was not confirmed"})
+			}
+		}
+		result.SuccessIDs = successful
+	}
 	response.Success(c, result)
 }
 
@@ -2908,7 +2944,21 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 		return
 	}
 
-	account, err := h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, req.Schedulable)
+	var account *service.Account
+	if h.schedulingController != nil {
+		action := "pause"
+		if req.Schedulable {
+			action = "resume"
+		}
+		_, err = h.schedulingController.Control(c.Request.Context(), scheduling.ControlCommand{AccountID: accountID, Scope: scheduling.ScopeAccount, Action: action})
+		if err != nil {
+			schedulingError(c, err)
+			return
+		}
+		account, err = h.adminService.GetAccount(c.Request.Context(), accountID)
+	} else {
+		account, err = h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, req.Schedulable)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

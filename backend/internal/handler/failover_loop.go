@@ -76,6 +76,11 @@ func sameAccountRetryDelayFor(failoverErr *service.UpstreamFailoverError, retryC
 	return delay
 }
 
+// Controlled requests use the shared attempt ledger and never replay the same account.
+func sameAccountRetryAllowedWithContext(ctx context.Context, failoverErr *service.UpstreamFailoverError, retryCount, retryLimit int) bool {
+	return !service.ControlledSchedulingEnabled(ctx) && sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
+}
+
 func sameAccountRetryAllowed(failoverErr *service.UpstreamFailoverError, retryCount, retryLimit int) bool {
 	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
 		return false
@@ -123,13 +128,14 @@ func effectiveSameAccountRetryLimit(failoverErr *service.UpstreamFailoverError, 
 
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {
-	SwitchCount           int
-	MaxSwitches           int
-	FailedAccountIDs      map[int64]struct{}
-	SameAccountRetryCount map[int64]int
-	LastFailoverErr       *service.UpstreamFailoverError
-	ForceCacheBilling     bool
-	hasBoundSession       bool
+	controlledSelectionCount int
+	SwitchCount              int
+	MaxSwitches              int
+	FailedAccountIDs         map[int64]struct{}
+	SameAccountRetryCount    map[int64]int
+	LastFailoverErr          *service.UpstreamFailoverError
+	ForceCacheBilling        bool
+	hasBoundSession          bool
 
 	// profitVetoedAccountIDs 记录被分组利润门终检否决的账号，是 FailedAccountIDs
 	// 的子集。之所以单独维护：HandleSelectionExhausted 的 503 退避分支会清空
@@ -203,6 +209,18 @@ func (s *FailoverState) HandleFailoverError(
 	if ctx != nil && ctx.Err() != nil {
 		return FailoverCanceled
 	}
+	if service.ControlledSchedulingEnabled(ctx) {
+		s.LastFailoverErr = failoverErr
+		if failoverErr == nil || !failoverErr.ShouldRetryNextAccount() {
+			return FailoverExhausted
+		}
+		s.FailedAccountIDs[accountID] = struct{}{}
+		s.controlledSelectionCount++
+		if s.controlledSelectionCount >= 128 {
+			return FailoverExhausted
+		}
+		return FailoverContinue
+	}
 	s.LastFailoverErr = failoverErr
 	if failoverErr == nil || !failoverErr.ShouldRetryNextAccount() {
 		return FailoverExhausted
@@ -210,7 +228,7 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 同账号重试不算切换账号，粘性会话仅在实际切换时强制缓存计费。
 	retryCount := s.SameAccountRetryCount[accountID]
-	sameAccountRetry := sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
+	sameAccountRetry := !service.ControlledSchedulingEnabled(ctx) && sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
 	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true
 	}
@@ -234,7 +252,7 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	// 同账号重试用尽，执行临时封禁
-	if failoverErr.RetryableOnSameAccount {
+	if failoverErr.RetryableOnSameAccount && !service.ControlledSchedulingEnabled(ctx) {
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
 	}
 
@@ -256,7 +274,7 @@ func (s *FailoverState) HandleFailoverError(
 	)
 
 	// Antigravity 平台换号线性递增延时
-	if platform == service.PlatformAntigravity {
+	if platform == service.PlatformAntigravity && !service.ControlledSchedulingEnabled(ctx) {
 		delay := time.Duration(s.SwitchCount-1) * time.Second
 		if !sleepWithContext(ctx, delay) {
 			return FailoverCanceled
@@ -274,6 +292,12 @@ func (s *FailoverState) HandleFailoverError(
 // 返回 FailoverExhausted 时，调用方应返回错误响应。
 // 返回 FailoverCanceled 时，调用方应直接 return。
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
+	if service.ControlledSchedulingEnabled(ctx) {
+		if ctx.Err() != nil {
+			return FailoverCanceled
+		}
+		return FailoverExhausted
+	}
 	// 客户端已断开时选号失败是 context canceled 的必然结果，
 	// 不代表账号耗尽，直接按取消终止。
 	if ctx.Err() != nil {
