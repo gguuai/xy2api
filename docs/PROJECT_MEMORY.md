@@ -7,9 +7,10 @@
 ### PR #66 推送失败复核与 lint 闭环（2026-09-27）
 
 - 复核确认此前不是 Git 推送失败：`86a6b05b8` 已在远端，PR #66 的实际阻断是 `golangci-lint` 报告的 37 项问题。修复覆盖错误返回值检查、类型断言、Redis 依赖豁免说明、De Morgan 静态规范、未使用代码和所有受影响文件格式化；sqlmock 清理改为显式忽略其未声明的 Close 错误，避免测试清理断言制造假失败。
-- 修复提交 `b6d3b7f15d1ef5dc104fb85d6776d394fcfdbf0f` 已推送至 `feat/controlled-account-scheduling`，继续更新现有 PR #66，未创建重复 PR。候选工作树 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work` 与受保护源 `/xy2/xy2api` 的边界保持不变。
+- lint 修复提交 `b6d3b7f15397f44126f667368935e9657e936df0` 与最终交接提交 `50697c0c562ad0850b288aff5c8dca06cc249246` 已推送至 `feat/controlled-account-scheduling`，继续更新现有 PR #66，未创建重复 PR。候选工作树 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work` 与受保护源 `/xy2/xy2api` 的边界保持不变。
 - 最终验证：`golangci-lint v2.13.2` 为 0 issues；`go test ./internal/scheduling ./migrations -race -count=1` PASS；`go test ./internal/service -count=1` PASS（156.870s）；`git diff --check` PASS。没有生产部署、数据库写入或真实上游请求。
 - 四角色仍固定为 `/xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}`；本轮仅追加调度验证记录，未修改其字节内容。三态行为仍以角色账本原始观测为准：BASELINE 保留 smart 且不阻断，MODIFIED 转 unknown 并阻断，ROLLBACK 恢复基线哈希与行为。
+- PR #66 当前头与远端一致，正文已补齐完整调度契约、健康/重试/暂停连续性与验证证据；最新 CI 全部成功。若主分支前进导致合并状态变化，须先合并最新 `origin/main` 再重新跑门禁。
 
 ### 调度最终优化与复审（2026-09-27）
 
