@@ -211,6 +211,88 @@ func (s *PostgresStore) SettleAttempt(ctx context.Context, ticketID, outcome str
 	}
 	return tx.Commit()
 }
+
+// RecordTerminalIntent durably records an observed terminal result before the
+// settlement transaction. If settlement is interrupted, the reconciler can
+// complete it without guessing from an expired lease.
+func (s *PostgresStore) RecordTerminalIntent(ctx context.Context, ticketID, outcome, certainty string, usagePending bool) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
+	if ticketID == "" || outcome == "" || certainty == "" || len(outcome) > 256 || len(certainty) > 64 {
+		return ErrInvalidControl
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE scheduling_attempts
+		SET metrics = metrics || jsonb_build_object(
+			'terminal_intent', true,
+			'terminal_outcome', $2,
+			'terminal_certainty', $3,
+			'terminal_usage_pending', $4)
+		WHERE ticket_id=$1 AND state<>'settled'`, ticketID, outcome, certainty, usagePending)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrAttemptIdentity
+	}
+	return nil
+}
+
+// ReconcileTerminalIntents settles tickets whose terminal intent was written
+// but whose first settlement transaction failed.
+func (s *PostgresStore) ReconcileTerminalIntents(ctx context.Context) (int64, error) {
+	if err := s.ready(); err != nil {
+		return 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ticket_id,
+		metrics->>'terminal_outcome',
+		COALESCE(metrics->>'terminal_usage_pending' = 'true', false)
+		FROM scheduling_attempts
+		WHERE state<>'settled' AND metrics->>'terminal_intent'='true'
+			AND COALESCE(NULLIF(metrics->>'terminal_outcome', ''), '') <> ''
+		ORDER BY dispatched_at, ticket_id
+		LIMIT 100`)
+	if err != nil {
+		return 0, err
+	}
+	type intent struct {
+		ticketID     string
+		outcome      string
+		usagePending bool
+	}
+	intents := make([]intent, 0)
+	for rows.Next() {
+		var value intent
+		if err = rows.Scan(&value.ticketID, &value.outcome, &value.usagePending); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		intents = append(intents, value)
+	}
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	if err = rows.Err(); err != nil {
+		return 0, err
+	}
+	var settled int64
+	var firstErr error
+	for _, value := range intents {
+		if err = s.SettleAttempt(ctx, value.ticketID, value.outcome, value.usagePending); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		settled++
+	}
+	return settled, firstErr
+}
+
 func (s *PostgresStore) MarkAttemptUnknown(ctx context.Context, ticketID string) error {
 	if err := s.ready(); err != nil {
 		return err

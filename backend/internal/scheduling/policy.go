@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+// NormalizeReasoningLabel is shared by live dispatch and explain so an
+// omitted reasoning effort resolves to the same profile key everywhere.
+func NormalizeReasoningLabel(raw string) string {
+	label := strings.ToLower(strings.TrimSpace(raw))
+	if label == "" {
+		return "default"
+	}
+	return label
+}
+
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{Mode: "bounded_same_tier_first", MaxAttempts: 3, MaxPerTier: 2, MaxPerAccount: 1, MaxAfterTimeout: 1, InitialPerToken: 10, Burst: 2, SwitchMarginMS: 200, ReserveFallback: true, CrossTier: true}
 }

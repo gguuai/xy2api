@@ -58,6 +58,9 @@ func (s *ControlledSchedulingService) Start() {
 		reconcile := func() {
 			c, done := context.WithTimeout(ctx, 5*time.Second)
 			defer done()
+			if _, e := s.Store.ReconcileTerminalIntents(c); e != nil && ctx.Err() == nil {
+				slog.Warn("scheduling terminal reconciliation unavailable", "error", e)
+			}
 			if _, e := s.Store.ReconcileExpired(c); e != nil && ctx.Err() == nil {
 				slog.Warn("scheduling reconciliation unavailable", "error", e)
 			}
@@ -151,6 +154,7 @@ func (s *ControlledSchedulingService) loadPolicy(ctx context.Context, groupID *i
 		p.GroupID = derefGroupID(groupID)
 	}
 	p = scheduling.NormalizePolicy(p)
+	r.Reasoning = scheduling.NormalizeReasoningLabel(r.Reasoning)
 	// Profiles inherit independently of allocation overrides; never mix models.
 	profile, ok := scheduling.ResolveProfileForTransport(p, r.Reasoning, r.ContextTokens, r.Protocol)
 	if (!ok || (profile.Transport != "" && profile.Transport != r.Protocol)) && defaults != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -465,6 +466,13 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			outcome = "upstream_error"
 		}
 		if knownTerminal {
+			certainty := "remote_terminal"
+			if !sent || outcome == "not_sent" {
+				certainty = "proven_not_sent"
+			}
+			if e := d.service.Store.RecordTerminalIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400); e != nil {
+				slog.Warn("scheduling terminal intent pending", "attempt_id", d.ticket.TicketID, "error", e)
+			}
 			if e := d.service.Store.SettleAttempt(ctx, d.ticket.TicketID, outcome, sent && status < 400); e != nil {
 				slog.Warn("scheduling settlement pending", "attempt_id", d.ticket.TicketID, "error", e)
 			}
@@ -584,7 +592,12 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 	}
 	response, err := send(req.WithContext(d.Context()))
 	if err != nil {
-		d.Finish("transport_error", false, err)
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && opErr.Op == "dial" {
+			d.Finish("not_sent", true, err)
+		} else {
+			d.Finish("transport_error", false, err)
+		}
 		d.mu.Lock()
 		timedOut := d.timeout
 		d.mu.Unlock()

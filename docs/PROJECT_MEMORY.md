@@ -4,17 +4,24 @@
 
 ## 当前交接状态
 
-### 智能可控调度已提交及独立复审（2026-09-27）
+### 调度最终优化与复审（2026-09-27）
+
+- 在 `5c3e89364` 的探测容量、未知采样与恢复分母修复基础上，补齐本轮发现的闭环问题：Explain 与实时派发统一空 reasoning 为 `default`；拨号尚未建立连接的失败标记为 `not_sent/proven_not_sent`，不会误计真实调用；已观察终态先写入 PostgreSQL terminal intent，再结算，后台每轮最多补偿100条并报告首个失败；新增迁移258为未结算 terminal intent 建立部分索引，避免长期扫描放大。
+- 新增 PostgreSQL 结算意图单元覆盖、迁移 checksum 条目与服务/调度验证；不改变旧 `legacy` 默认，不操作 `/xy2/xy2api`、生产数据库或真实上游。
+- 已观察验证：`go test ./internal/scheduling ./migrations -count=1` PASS；`go test ./internal/service -count=1` PASS（157.082s）；`go test ./internal/scheduling -race -count=1` PASS；`git diff --check` PASS。首次迁移 checksum 错误为清单计算命令未按 `strings.TrimSpace` 复现，修正后校验通过，失败输出保留在本轮执行记录。
+- 本轮已在候选分支本地提交（`fix controlled scheduler settlement and explain consistency`）；提交后再次核对 diff、迁移清单与测试，工作树保持干净。没有把本轮代码结果写入旧四角色归档。
+
+### 智能可控调度已提交及独立复审（2026-09-27，前置记录）
 
 - 已按用户要求先本地提交实现：分支 feat/controlled-account-scheduling，提交 2a9c62f0c7bf1d92cb677f0ea460be2c253a7b9b，149个文件；未推送/合并/部署，原 /xy2/xy2api 不变。提交源码与既有 scheduling_final_02 交付包一致。此前“没有Git提交”描述属于提交前状态。
 - 随后只读复审确认4项P1：确定未连接成功仍成为unknown并永久占容量；PG暂时结算失败丢失已知终态；probe满不即时跨层；全慢环境让UNKNOWN/HALF_OPEN长期拿不到采样。前两项在legacy也真实复现，因此当前提交不应直接生产部署，即使保持legacy。
 - 另确认2项P2：1:99的小权重账号恢复份额由0.1%膨胀到10%；默认Explain空effort与真实default不同，实际A2但预览A1。已有真实PG/Redis/local HTTP或现有Go核心/Lua最小复现；失败断言保留，不将“复现成功”说成“已修复”。
-- 改进方向合理，优先级/权重分离、总预算、无TPS、人工控制独立和语义提交边界应保留；修复先做发送确定性/可靠结算，再做probe容量/恢复采样，然后做恢复分母/Explain一致性。256KiB大请求元数据退化、上下文token没有生产赋值、恢复继承操作、PG逐attempt轮询负载属于后续优化/测量边界。
-- 完整报告 /xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/post-commit-review-20260927/REVIEW.md；各角色报告和字面复现日志在其子目录。此次业务代码没有进一步修改，新缺陷尚待修复。四角色继续指向已提交实现，VERIFICATION按前缀保留方式追加本轮提交和复审证据；不借用旧三态声称新缺陷已修复。
+- 改进方向合理，优先级/权重分离、总预算、无TPS、人工控制独立和语义提交边界应保留；当时的修复顺序先做发送确定性/可靠结算，再做 probe 容量/恢复采样，然后做恢复分母/Explain 一致性。256KiB 大请求元数据退化、上下文 token 没有生产赋值、恢复继承操作仍属于后续测量边界。
+- 完整前置报告 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/post-commit-review-20260927/REVIEW.md`；本记录提出的问题已由上方最终优化条目处理。四角色继续指向已提交实现，后续验证仍按前缀保留方式追加；不借用旧三态声称新缺陷已修复。
 
-### 智能可控账号调度实现与本地验证（2026-09-27，默认 legacy，未部署）
+### 智能可控账号调度实现与本地验证（2026-09-27，默认 legacy，未部署，前置记录）
 
-- 用户已批准最终方案并要求边推进边审查。实现对象仍为原仓库 HEAD e9b546bf77326e5253728127e50a2af050f18679；全部变更位于 /xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work，原 /xy2/xy2api 的 4,356 个文件（含已有记忆改动）与分支保持。没有 Git 提交、推送、生产部署或真实上游付费请求。
+- 用户已批准最终方案并要求边推进边审查。本段记录的是最终优化前的实现阶段；后续提交和复审结果见上方，全部变更仍位于 `/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work`，原 `/xy2/xy2api` 保持不变。没有推送、生产部署或真实上游付费请求。
 - 新增严格优先级、独立 traffic_weight 与共享 SWRR、pin/fill_first、跨层容量溢出、统一实际 attempt 总账、按模型首语义时间档位、健康与渐进恢复、全慢/UNKNOWN 兜底。TPS 不参与选路；未配置模型延迟阈值时仅观测，不凭空设置统一秒数。升级默认仍是 legacy，不自动改变现有分流。
 - PostgreSQL 控制 epoch 与 dispatch gate、活动票据和幂等结算约束暂停/排空/强停；Redis 共享容量、轮询与重试额度。HTTP/SSE、WS 逐轮、协议转换和 OAuth 重发进入同一预算。强 owner 不能经暂停、删绑定或切回 legacy 偷换账号。迁移 257、策略 CAS、只读 explain、尝试链/分流统计及中文英文管理页面已实现。
 - 独立审查实际复现并修复：响应头重算首字期限侵占后备预算、无参数工具终态漏记语义、派发准备失败误扣次数/重试额度、后备预览忽略本次即将用完的预算、部分 retry JSON 丢失默认值、Gemini/Anthropic 协议与思考档位误归类、暂停 owner 在 legacy 回退误发其他账号。失败原始日志与修复后匹配回归均保留。

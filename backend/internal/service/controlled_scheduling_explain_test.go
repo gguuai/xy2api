@@ -86,7 +86,7 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 	h := scheduling.HealthSnapshot{State: scheduling.HealthRecovering, RecoveryStage: 1, GoodStreak: 4, UpdatedAtMS: time.Now().UnixMilli()}
 	raw, e := json.Marshal(h)
 	require.NoError(t, e)
-	require.NoError(t, client.Set(ctx, scheduling.HealthRedisKey(2, "m", inherited, "", "unknown", "ws"), raw, 0).Err())
+	require.NoError(t, client.Set(ctx, scheduling.HealthRedisKey(2, "m", inherited, "default", "unknown", "ws"), raw, 0).Err())
 	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{accounts: accounts}, concurrency: NewConcurrencyService(explainLoads{counts: map[int64]int{2: 1}})}
 	svc.SetExplainEligibility(allowExplain, nil)
 	before := mr.Dump()

@@ -61,6 +61,7 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 	if input.Protocol == "" {
 		input.Protocol = "http"
 	}
+	input.Reasoning = scheduling.NormalizeReasoningLabel(input.Reasoning)
 	if input.GroupID < 0 || input.Model == "" || input.PinAccountID < 0 || (input.ContextTokens != nil && *input.ContextTokens < 0) {
 		return nil, scheduling.ErrInvalidControl
 	}
