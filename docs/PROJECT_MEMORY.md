@@ -4,6 +4,14 @@
 
 ## 当前交接状态
 
+### 智能可控调度已提交及独立复审（2026-09-27）
+
+- 已按用户要求先本地提交实现：分支 feat/controlled-account-scheduling，提交 2a9c62f0c7bf1d92cb677f0ea460be2c253a7b9b，149个文件；未推送/合并/部署，原 /xy2/xy2api 不变。提交源码与既有 scheduling_final_02 交付包一致。此前“没有Git提交”描述属于提交前状态。
+- 随后只读复审确认4项P1：确定未连接成功仍成为unknown并永久占容量；PG暂时结算失败丢失已知终态；probe满不即时跨层；全慢环境让UNKNOWN/HALF_OPEN长期拿不到采样。前两项在legacy也真实复现，因此当前提交不应直接生产部署，即使保持legacy。
+- 另确认2项P2：1:99的小权重账号恢复份额由0.1%膨胀到10%；默认Explain空effort与真实default不同，实际A2但预览A1。已有真实PG/Redis/local HTTP或现有Go核心/Lua最小复现；失败断言保留，不将“复现成功”说成“已修复”。
+- 改进方向合理，优先级/权重分离、总预算、无TPS、人工控制独立和语义提交边界应保留；修复先做发送确定性/可靠结算，再做probe容量/恢复采样，然后做恢复分母/Explain一致性。256KiB大请求元数据退化、上下文token没有生产赋值、恢复继承操作、PG逐attempt轮询负载属于后续优化/测量边界。
+- 完整报告 /xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/post-commit-review-20260927/REVIEW.md；各角色报告和字面复现日志在其子目录。此次业务代码没有进一步修改，新缺陷尚待修复。四角色继续指向已提交实现，VERIFICATION按前缀保留方式追加本轮提交和复审证据；不借用旧三态声称新缺陷已修复。
+
 ### 智能可控账号调度实现与本地验证（2026-09-27，默认 legacy，未部署）
 
 - 用户已批准最终方案并要求边推进边审查。实现对象仍为原仓库 HEAD e9b546bf77326e5253728127e50a2af050f18679；全部变更位于 /xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work，原 /xy2/xy2api 的 4,356 个文件（含已有记忆改动）与分支保持。没有 Git 提交、推送、生产部署或真实上游付费请求。
@@ -297,6 +305,8 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
+- `20260927-controlled-scheduling-postcommit-review`：先提交实现并完成独立复审，4项P1/2项P2有实证，业务修复尚未执行；完整报告见 post-commit-review-20260927/REVIEW.md。原源码保持，未推送或部署。
 
 - `20260927-controlled-scheduling-implementation`：代码实现、独立审查修复及本地验证完成，源码和文档冻结；最终四角色事务按实现目录 CHECKPOINT.json 连续执行，最终结果以 final-transaction-scheduling_final_02/{VERIFIED.json,PUBLISHED.json} 为准。TARGET=/xy2/xy2api；副本=/xy2/artifacts/iq-candy-20260927/scheduling-implementation-20260927/work。保留 legacy 默认；未进行生产灰度，不应跳过逐模型配置与上线验收。
 
@@ -1151,3 +1161,11 @@ pnpm --dir frontend run build
 - 首轮源码事务 scheduling_final_01 的 stage/verify/publish 已实际 exit0 并完整保留。最终只读复核纠正一处说明：notification_warning 仅用于强制停止的 Redis 取消通知失败，普通暂停依赖 PostgreSQL gate/outbox，不同步返回该告警。仅修订运行说明与本记忆的交付身份，业务源码哈希不变；后继 scheduling_final_02 重新封装、执行匹配轻量三态并逐字节继承01账本，不重跑已成功的全量源码验证。
 
 - 文档后继事务的归档守卫实际发现01包未包含被 docs/* 忽略的两份新文档，v1 stage exit1 已保留，未覆盖01。现仅给 .gitignore 添加两条精确文档白名单；02必须完整纳入运行说明及79项验收映射，不能把未打包文档算作01交付内容。复核01含全部3280个后端源文件及所有冻结前端源，哈希无缺漏；业务代码不变。
+
+
+### 2026-09-27 — 调度实现先提交、后独立复审
+
+- 实际本地提交2a9c62f0c7bf1d92cb677f0ea460be2c253a7b9b，分支feat/controlled-account-scheduling；首次提交因Git身份缺失exit128，使用仅本次命令的Codex本地身份后成功，未改全局或仓库身份配置；原始失败与成功命令均保留。
+- 三角色并行只读反证审查加ROOT协议边界验证，发现并证实R1–R6（4 P1/2 P2）：发送确定性、终态持久化、probe容量溢出、全慢恢复饥饿、回流分母、Explain请求档不一致。全部报告给出具体源码行、触发、影响、实际命令结果与建议，没有在本轮暗改业务修复。
+- 两个控制缺陷使用真实隔离PostgreSQL/Redis/local TCP/HTTP，期望恢复的测试exit1；UI一致性测试exit1；策略缺陷通过断言现状复现，exit0不表示已修复。原语义/元数据定向回归exit0，新增256KiB边界观察exit0。测试夹具清理，原工作目录和生产服务未修改。
+- 结论为方向合理、故障闭环未完成，当前不建议生产部署（legacy也受两项P1影响）。先修容量与可靠结算，再修恢复与解释一致性；业务实现仍为2a9c62f，当前变更仅交接文档。完整证据位于 scheduling-implementation-20260927/post-commit-review-20260927，既有四角色/原三态保留并追加审查账本。
