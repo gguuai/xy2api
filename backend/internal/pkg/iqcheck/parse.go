@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -20,7 +21,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-const MaxEventBytes = 128 * 1024
+const MaxEventBytes = 2 * 1024 * 1024
 const MaxEvents = 4096
 
 var errBodyLimit = errors.New("response_too_large")
@@ -176,13 +177,20 @@ func (p *streamParser) consume(raw []byte, eventName string) error {
 		return err
 	}
 	p.d.EventType = safeToken(env.Type, 96)
-	if eventName != "" && env.Type != "" && eventName != env.Type {
+	if eventName != "" && eventName != "message" && env.Type != "" && eventName != env.Type {
 		return failure("event_type_mismatch")
+	}
+	if env.Type == "" && eventName != "message" {
+		env.Type = eventName
+		p.d.EventType = safeToken(eventName, 96)
 	}
 	if p.done {
 		return failure("data_after_done")
 	}
 	if env.Error != nil && string(env.Error) != "null" {
+		return failure(ReadUpstreamError(raw, p.d))
+	}
+	if isErrorEnvelope(raw) {
 		return failure(ReadUpstreamError(raw, p.d))
 	}
 	if p.chat {
@@ -289,7 +297,7 @@ func (p *streamParser) terminal(raw []byte) error {
 	}
 	ReadUsage(raw, p.d)
 	if len(r.Model) > 256 {
-		return failure("response_too_large")
+		return failure("metadata_too_large")
 	}
 	p.d.TerminalItems = len(r.Output)
 	p.d.AnswerSource = "terminal_output"
@@ -399,7 +407,8 @@ func (p *streamParser) terminal(raw []byte) error {
 		}
 	}
 	if len(answer) > MaxAnswerBytes {
-		return failure("response_too_large")
+		p.d.LimitKind, p.d.LimitBytes = "answer_bytes", MaxAnswerBytes
+		return failure("answer_too_large")
 	}
 	if p.completed && (p.answer != answer || p.responseID != r.ID || p.model != r.Model) {
 		return failure("conflicting_final_response")
@@ -435,7 +444,7 @@ func (p *streamParser) consumeChat(raw []byte) error {
 	}
 	ReadUsage(raw, p.d)
 	if len(r.Model) > 256 {
-		return failure("response_too_large")
+		return failure("metadata_too_large")
 	}
 	if r.Model != "" {
 		p.model = r.Model
@@ -456,7 +465,8 @@ func (p *streamParser) consumeChat(raw []byte) error {
 		}
 		p.answer += text
 		if len(p.answer) > MaxAnswerBytes {
-			return failure("response_too_large")
+			p.d.LimitKind, p.d.LimitBytes = "answer_bytes", MaxAnswerBytes
+			return failure("answer_too_large")
 		}
 		if c.Finish != nil {
 			if *c.Finish != "stop" {
@@ -485,6 +495,7 @@ func parse(body io.Reader, sse, chat bool, d *Diagnostic) Result {
 		if err != nil {
 			d.Code = "response_read_failed"
 			var f *parseFailure
+			var networkError net.Error
 			switch {
 			case errors.As(err, &f):
 				d.Code = f.code
@@ -492,7 +503,8 @@ func parse(body io.Reader, sse, chat bool, d *Diagnostic) Result {
 				d.Offset = f.offset
 			case errors.Is(err, errBodyLimit):
 				d.Code = "response_too_large"
-			case errors.Is(err, context.DeadlineExceeded):
+				d.LimitKind, d.LimitBytes = "response_bytes", MaxResponseBytes
+			case errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkError) && networkError.Timeout():
 				d.Code = "timeout"
 				d.Stage = "read"
 			case errors.Is(err, context.Canceled):
@@ -560,6 +572,7 @@ func parse(body io.Reader, sse, chat bool, d *Diagnostic) Result {
 		part, prefix, err := br.ReadLine()
 		line = append(line, part...)
 		if len(line)+frameBytes > MaxEventBytes {
+			d.LimitKind, d.LimitBytes = "event_bytes", MaxEventBytes
 			return finish(failure("event_too_large"))
 		}
 		if err != nil {
@@ -665,6 +678,9 @@ func ParseHTTP(resp *http.Response, chat bool, transport string) (result Result)
 	if resp.StatusCode != http.StatusOK {
 		d.Stage = "http"
 		reason := httpCode(resp.StatusCode)
+		if resp.StatusCode == http.StatusPaymentRequired {
+			reason = "quota_exhausted"
+		}
 		raw, e := io.ReadAll(io.LimitReader(body, 8193))
 		if e == nil {
 			if parsed := ReadUpstreamError(raw, d); parsed != "upstream_error" {
@@ -673,7 +689,10 @@ func ParseHTTP(resp *http.Response, chat bool, transport string) (result Result)
 		}
 		return finishUnknown(d, reason)
 	}
-	if media != "" && media != "application/json" && media != "text/event-stream" && media != "application/octet-stream" && media != "text/plain" {
+	if media == "text/html" {
+		return finishUnknown(d, "upstream_html_response")
+	}
+	if media != "" && media != "application/json" && !strings.HasSuffix(media, "+json") && media != "text/event-stream" && media != "application/octet-stream" && media != "text/plain" {
 		return finishUnknown(d, "unsupported_media_type")
 	}
 	br := bufio.NewReaderSize(body, 4096)
@@ -684,10 +703,11 @@ func ParseHTTP(resp *http.Response, chat bool, transport string) (result Result)
 		b, e := br.ReadByte()
 		if e != nil {
 			d.Stage = "read"
+			var networkError net.Error
 			if e == io.EOF && len(prefix) == 0 {
 				return finishUnknown(d, "zero_byte_response")
 			}
-			if errors.Is(e, context.DeadlineExceeded) {
+			if errors.Is(e, context.DeadlineExceeded) || errors.As(e, &networkError) && networkError.Timeout() {
 				return finishUnknown(d, "timeout")
 			}
 			if errors.Is(e, context.Canceled) {
@@ -712,6 +732,8 @@ func ParseHTTP(resp *http.Response, chat bool, transport string) (result Result)
 	}
 	var sse bool
 	switch first[0] {
+	case '<':
+		return finishUnknown(d, "upstream_html_response")
 	case '{':
 		sse = false
 	case ':', 'd', 'e', 'i', 'r':

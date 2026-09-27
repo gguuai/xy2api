@@ -22,7 +22,8 @@ var iqTransportExtraKeys = []string{"openai_responses_mode", "openai_responses_s
 
 func iqSchedulablePredicate() dbpredicate.Account {
 	return func(s *entsql.Selector) {
-		s.Where(entsql.ExprP("NOT (COALESCE(" + s.C("iq_check") + "->>'enabled','false') = 'true' AND " + "COALESCE(" + s.C("iq_check") + "->>'status','unknown') = 'degraded')"))
+		c := s.C("iq_check")
+		s.Where(entsql.ExprP("NOT (COALESCE(" + c + "->>'enabled','false') = 'true' AND (COALESCE(" + c + "->>'status','unknown') = 'degraded' OR COALESCE(" + c + "->>'last_run_status','') = 'unknown'))"))
 	}
 }
 
@@ -36,7 +37,8 @@ func applyIQStatusFilter(ctx context.Context, q *dbent.AccountQuery) *dbent.Acco
 		return q
 	}
 	return q.Where(dbaccount.PlatformEQ(service.PlatformOpenAI), func(s *entsql.Selector) {
-		s.Where(entsql.ExprP("CASE WHEN " + s.C("iq_check") + "->>'enabled' = 'true' THEN COALESCE(" + s.C("iq_check") + "->>'status','unknown') ELSE 'unknown' END = '" + status + "'"))
+		c := s.C("iq_check")
+		s.Where(entsql.ExprP("CASE WHEN " + c + "->>'enabled' = 'true' THEN CASE WHEN " + c + "->>'last_run_status' = 'unknown' THEN 'unknown' ELSE COALESCE(" + c + "->>'status','unknown') END ELSE 'unknown' END = '" + status + "'"))
 	})
 }
 
@@ -50,6 +52,8 @@ func resetIQState(state domain.IQCheck, settings *domain.IQCheckSettings, now ti
 	state.TaskID = ""
 	state.Status = "unknown"
 	state.LastValidAt = nil
+	state.LastValidStatus, state.LastValidReason = "", ""
+	state.SchedulingBlocked = false
 	state.LastRunStatus = ""
 	state.LastRunReason = ""
 	state.RoundStartedAt = nil
@@ -376,8 +380,9 @@ func (r *accountRepository) CompleteIQCheck(ctx context.Context, claim service.I
 			return err
 		}
 	}
+	state.ObserveResult(result.Status, result.Reason, now)
 	retry := false
-	if state.AttemptCount == 1 && state.RoundDeadline != nil && iqcheck.Retryable(result) {
+	if state.AttemptCount < iqcheck.MaxAttemptsPerRound && state.RoundDeadline != nil && iqcheck.Retryable(result) {
 		next := now.Add(time.Duration(2+rand.IntN(4)) * time.Second)
 		if state.NotBefore != nil {
 			next = iqLater(next, *state.NotBefore)
@@ -411,7 +416,7 @@ func (r *accountRepository) CompleteIQCheck(ctx context.Context, claim service.I
 		if err = recordIQMetric(ctx, client, claim.AccountID, now, "round", result.Reason, now.Sub(roundStarted).Milliseconds()); err != nil {
 			return err
 		}
-		if state.AttemptCount == 2 && (result.Status == "smart" || result.Status == "degraded") {
+		if state.AttemptCount > 1 && (result.Status == "smart" || result.Status == "degraded") {
 			if err = recordIQMetric(ctx, client, claim.AccountID, now, "recovered", result.Reason, 0); err != nil {
 				return err
 			}

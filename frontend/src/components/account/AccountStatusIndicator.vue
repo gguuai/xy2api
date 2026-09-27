@@ -1,6 +1,6 @@
 <template>
   <div class="flex items-center gap-2">
-    <span v-if="account.iq_check?.enabled && account.iq_check.status === 'degraded'" class="badge badge-warning text-xs">{{ t('admin.accounts.iqBlocked') }}</span>
+    <span v-if="account.iq_check?.enabled && (account.iq_check.scheduling_blocked || account.iq_check.status === 'degraded' || account.iq_check.last_run_status === 'unknown')" class="badge badge-warning text-xs">{{ t('admin.accounts.iqBlocked') }}</span>
     <!-- Rate Limit Display (429) - Two-line layout -->
     <div v-if="isRateLimited" class="flex flex-col items-center gap-1">
       <span class="badge text-xs badge-warning">{{ t('admin.accounts.status.rateLimited') }}</span>
@@ -28,7 +28,7 @@
           {{ tempUnschedRecoveryText }}
         </span>
       </div>
-      <span v-else-if="account.status !== 'active' || !(account.iq_check?.enabled && account.iq_check.status === 'degraded')" :class="['badge text-xs', statusClass]">
+      <span v-else-if="account.status !== 'active' || !(account.iq_check?.enabled && (account.iq_check.scheduling_blocked || account.iq_check.status === 'degraded' || account.iq_check.last_run_status === 'unknown'))" :class="['badge text-xs', statusClass]">
         {{ statusText }}
       </span>
     </template>

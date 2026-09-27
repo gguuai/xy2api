@@ -76,6 +76,9 @@ func TestIQCheckProbe(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				result := s.probe(context.Background(), 1)
 				require.Equal(t, tc.status, result.Status, result)
+				if tc.name == "timeout" {
+					require.Equal(t, "timeout", result.Reason)
+				}
 				require.Nil(t, transport.requests[i].GetBody)
 				require.True(t, HTTPUpstreamSingleAttempt(transport.requests[i].Context()))
 				require.Equal(t, "single_attempt", result.Diagnostic.RetryVisibility)
@@ -143,6 +146,14 @@ func TestIQCheckOAuthPayloadAndStaleCandidate(t *testing.T) {
 	fresh.IQCheck.Status = "degraded"
 	gateway := &OpenAIGatewayService{accountRepo: &iqProbeAccounts{account: &fresh}, schedulerSnapshot: &SchedulerSnapshotService{}}
 	require.Nil(t, gateway.recheckSelectedOpenAIAccountFromDB(context.Background(), &cached, nil, PlatformOpenAI, iqcheck.Model, false, ""))
+	for _, status := range []string{"smart", "unknown"} {
+		fresh.IQCheck.Status = status
+		fresh.IQCheck.LastRunStatus = "unknown"
+		fresh.IQCheck.LastRunReason = "response_too_large"
+		require.Nil(t, gateway.recheckSelectedOpenAIAccountFromDB(context.Background(), &cached, nil, PlatformOpenAI, iqcheck.Model, false, ""), "stale smart cache must not dispatch an account with a failed probe")
+	}
+	fresh.IQCheck.ObserveResult("smart", "correct_answer", time.Now())
+	require.NotNil(t, gateway.recheckSelectedOpenAIAccountFromDB(context.Background(), &cached, nil, PlatformOpenAI, iqcheck.Model, false, ""))
 }
 
 func TestIQCheckConfiguredRoutes(t *testing.T) {

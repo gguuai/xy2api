@@ -12,6 +12,13 @@ const record: IQCheckRecord = {
  diagnostic: { parser_version: 'iq-response-v4', stage: 'grade', code: 'correct_answer', protocol: 'responses', http_status: 200, first_byte_ms: 1891, total_ms: 10882, input_tokens: 243, output_tokens: 231, reasoning_tokens: 220, media_type: 'text/event-stream', retry_visibility: 'single_attempt', answer_source: 'terminal_output', request_id: 'example-id', event_index: 15 }
 }
 describe('IQ presentation', () => {
+ it.each(['zh', 'en'])('identifies the precise size limit in %s', locale => {
+  const i18n = createI18n({ messageCompiler, legacy: false, locale, messages: { zh: { admin: zh }, en: { admin: en } } })
+  const rows = iqTechnicalGroups({ ...record, diagnostic: { parser_version: 'iq-response-v5', stage: 'decode', code: 'response_too_large', category: 'protocol', limit_kind: 'response_bytes', limit_bytes: 8388608, bytes_read: 8388609 } }, i18n.global.t, i18n.global.te).flatMap(group => group.rows)
+  expect(rows.find(row => row.raw === 'response_bytes')?.value).not.toBe('response_bytes')
+  expect(rows.find(row => row.raw === '8388608')?.value).toBe('8,388,608 B')
+  expect(rows.find(row => row.raw === 'protocol')?.value).not.toBe('protocol')
+ })
  it('groups real diagnostic fields, keeps timing scopes and deduplicates the model/protocol', () => {
   const i18n = createI18n({ messageCompiler, legacy: false, locale: 'zh', messages: { zh: { admin: zh } } })
   const rows = iqDiagnosticSummary(record, i18n.global.t)

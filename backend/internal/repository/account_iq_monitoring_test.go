@@ -33,8 +33,8 @@ func TestIQMonitoringSchedule(t *testing.T) {
 	finishIQSchedule(&s, r, now)
 	require.Equal(t, after, *s.NextRunAt)
 	finishIQSchedule(&s, iqcheck.Unknown("quota_exhausted"), now)
-	require.Equal(t, "paused", s.ExecutionState)
-	require.Nil(t, s.NextRunAt)
+	require.Equal(t, "deferred", s.ExecutionState)
+	require.NotNil(t, s.NextRunAt)
 	queueIQ(&s, now)
 	require.Equal(t, "deferred", s.ExecutionState)
 	require.Equal(t, after, *s.NextRunAt)
@@ -104,7 +104,7 @@ func TestIQForbiddenAutomaticallyResumes(t *testing.T) {
 	finishIQSchedule(&s, iqcheck.Grade("21"), now)
 	require.Equal(t, time.Minute, s.NextRunAt.Sub(now))
 	require.False(t, s.BlocksScheduling())
-	for _, reason := range []string{"permission_denied", "authentication_unavailable", "quota_exhausted"} {
+	for _, reason := range []string{"permission_denied", "authentication_unavailable"} {
 		finishIQSchedule(&s, iqcheck.Unknown(reason), now)
 		require.Equal(t, "paused", s.ExecutionState)
 		require.Nil(t, s.NextRunAt)

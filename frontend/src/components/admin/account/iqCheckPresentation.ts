@@ -47,6 +47,8 @@ export function iqTechnicalGroups(record: IQCheckRecord, t: Translate, exists: (
     if (value == null || value === '') return []
     const raw = String(value)
     let display = raw
+    if (key === 'category') display = translated('iqCategories', raw)
+    if (key === 'limit_kind') display = translated('iqLimits', raw)
     if (key === 'stage') display = translated('iqStages', raw)
     if (key === 'answer_source') display = translated('iqAnswerSources', raw)
     if (key === 'retry_visibility') display = translated('iqRetryVisibility', raw)
@@ -54,12 +56,12 @@ export function iqTechnicalGroups(record: IQCheckRecord, t: Translate, exists: (
     if (key === 'transport') display = raw === 'http' ? 'HTTP' : raw === 'plugin' ? t(prefix + 'iqPlugin') : raw
     if (key === 'media_type') display = ({ 'text/event-stream': 'SSE', 'application/json': 'JSON' })[raw] ?? raw
     if (key === 'format_detected' || key === 'retry_after_unbounded') display = t(prefix + (value ? 'iqYes' : 'iqNo'))
-    if (key === 'bytes_read') display = `${Number(value).toLocaleString()} B`
+    if (key === 'bytes_read' || key === 'limit_bytes') display = `${Number(value).toLocaleString()} B`
     return [{ label: t(prefix + 'iqDiagnosticLabels.' + key), value: display, raw }]
   }
   for (const [label, keys] of [
     ['iqRequest', ['request_id', 'media_type', 'content_encoding', 'transport', 'retry_visibility', 'error_code', 'error_type', 'retry_after', 'retry_after_unbounded']],
-    ['iqParsing', ['stage', 'answer_source', 'done_messages', 'terminal_items', 'ignored_items', 'ignored_types', 'event_type', 'event_index', 'bytes_read', 'field', 'offset', 'format_detected']]
+    ['iqParsing', ['category', 'limit_kind', 'limit_bytes', 'stage', 'answer_source', 'done_messages', 'terminal_items', 'ignored_items', 'ignored_types', 'event_type', 'event_index', 'bytes_read', 'field', 'offset', 'format_detected']]
   ] as const) {
     const rows = keys.flatMap(key => row(key, d?.[key]))
     if (label === 'iqParsing' && d?.code && d.code !== 'correct_answer') rows.unshift(...row('code', d.code))

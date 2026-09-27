@@ -128,11 +128,13 @@ describe('IQ results', () => {
   })
 
   it('shows persistent retry and retained assessment without allowing duplicate dispatch', async () => {
-    status.mockResolvedValue({ enabled: true, status: 'degraded', execution_state: 'retry_wait', last_valid_at: '2026-09-15T10:00:00Z', last_run_status: 'unknown', last_run_reason: 'http_503', budget_warning: true })
+    status.mockResolvedValue({ enabled: true, status: 'degraded', execution_state: 'retry_wait', last_valid_at: '2026-09-15T10:00:00Z', last_valid_status: 'degraded', scheduling_blocked: true, last_run_status: 'unknown', last_run_reason: 'http_503', budget_warning: true })
     history.mockResolvedValue([{ id: 1, status: 'unknown', reason: 'http_503', started_at: '2026-09-15T10:10:00Z', finished_at: null, attempts: [{ attempt_no: 1, reason: 'http_503', finished_at: '2026-09-15T10:10:01Z', latency_ms: 1000 }] }])
     const wrapper = mount(IQCheckResultsModal, { props: { show: true, account: { id: 8 } as Account }, global: { stubs: { BaseDialog: { template: '<div><slot /></div>' } } } })
     await flushPromises()
     expect(wrapper.text()).toContain('iqPreviousValid')
+    expect(wrapper.get('[data-testid="iq-current-state"]').find('p').text()).toContain('iqCheckStatus.unknown')
+    expect(wrapper.text()).toContain('iqTrafficAvoidance')
     expect(wrapper.text()).toContain('iqCheckStatus.degraded')
     expect(wrapper.text()).toContain('iqExecutionStates.retry_wait')
     expect(wrapper.text()).not.toContain('iqBudgetWarning')

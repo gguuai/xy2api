@@ -21,8 +21,9 @@
     <p v-if="queueError" role="alert" class="mb-3 text-sm text-red-600 dark:text-red-400">{{ queueError }}</p>
     <p v-if="queueMessage" role="status" class="mb-3 text-sm text-gray-700 dark:text-gray-300">{{ queueMessage }}</p>
     <div v-if="state" class="mb-5 border-b border-gray-200 pb-5 dark:border-dark-600" data-testid="iq-current-state" :aria-label="t('admin.accounts.iqCurrentState')">
-      <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ state.enabled ? t('admin.accounts.iqCheckStatus.' + (state.status || 'unknown')) : t('admin.accounts.iqOff') }}</p>
-      <p v-if="state.enabled && state.last_run_status === 'unknown' && state.last_valid_at" class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.accounts.iqPreviousValid') }} · {{ formatDateTime(state.last_valid_at) }}</p>
+      <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ state.enabled ? t('admin.accounts.iqCheckStatus.' + (state.last_run_status === 'unknown' ? 'unknown' : state.status || 'unknown')) : t('admin.accounts.iqOff') }}</p>
+      <p v-if="state.enabled && state.last_run_status === 'unknown' && state.last_valid_at" class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.accounts.iqPreviousValid') }}<span v-if="state.last_valid_status"> · {{ t('admin.accounts.iqCheckStatus.' + state.last_valid_status) }}</span> · {{ formatDateTime(state.last_valid_at) }}</p>
+      <p v-if="state.scheduling_blocked" class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ t('admin.accounts.iqTrafficAvoidance') }}</p>
       <p v-if="currentReason" class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ currentReason }}</p>
       <dl class="mt-4 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
         <div><dt class="text-gray-500 dark:text-dark-400">{{ t('admin.accounts.iqLastAssessment') }}</dt><dd class="mt-1 tabular-nums">{{ state.last_run_at ? formatDateTime(state.last_run_at) : t('admin.accounts.iqNotChecked') }}</dd></div>
@@ -126,7 +127,7 @@ const state = ref<Account['iq_check']>()
 const currentReason = computed(() => {
   const value = state.value
   if (!value?.enabled) return ''
-  const reason = value.execution_reason || (value.last_run_status === 'unknown' ? value.last_run_reason : '')
+  const reason = (value.last_run_status === 'unknown' ? value.last_run_reason : '') || value.execution_reason
   if (reason === 'minimum_interval') return ''
   if (reason === 'http_403' && value.execution_state !== 'paused') return t('admin.accounts.iqForbiddenRetry')
   return reason ? executionReasonLabel(reason) : ''

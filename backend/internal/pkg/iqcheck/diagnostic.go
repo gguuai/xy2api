@@ -6,11 +6,14 @@ import (
 	"time"
 )
 
-const ParserVersion = "iq-response-v4"
+const ParserVersion = "iq-response-v5"
 
 // Diagnostic never contains response text, reasoning, credentials or raw errors.
 // Fixed field lengths keep its JSON representation below the database's 4 KiB cap.
 type Diagnostic struct {
+	LimitKind           string     `json:"limit_kind,omitempty"`
+	LimitBytes          int        `json:"limit_bytes,omitempty"`
+	Category            string     `json:"category,omitempty"`
 	StateProtection     string     `json:"state_protection,omitempty"`
 	DoneMessages        int        `json:"done_messages,omitempty"`
 	TerminalItems       int        `json:"terminal_items,omitempty"`
@@ -62,6 +65,12 @@ func (d *Diagnostic) Bounded() *Diagnostic {
 		return nil
 	}
 	v := *d
+	switch v.LimitKind {
+	case "response_bytes", "event_bytes", "answer_bytes":
+	default:
+		v.LimitKind, v.LimitBytes = "", 0
+	}
+	v.Category = FailureCategory(v.Code)
 	if v.StateProtection != "protected" && v.StateProtection != "unprotected" && v.StateProtection != "unmanaged" {
 		v.StateProtection = ""
 	}

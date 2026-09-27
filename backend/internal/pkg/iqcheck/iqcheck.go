@@ -10,7 +10,10 @@ const Effort = domain.DefaultIQEffort
 const PromptVersion = "candy-v2"
 const GraderVersion = "candy-grader-v2"
 const OutputInstruction = `请解答用户的题目。输出格式统一为一个简洁 JSON 对象，唯一字段为 answer，值为最终整数答案。不要输出解释、Markdown 或其他字段。`
-const MaxResponseBytes = 256 * 1024
+
+// Reasoning and completed envelopes may repeat large payloads. Bound the wire
+// stream separately from retained assistant text, which stays capped at 64 KiB.
+const MaxResponseBytes = 8 * 1024 * 1024
 const MaxAnswerBytes = 64 * 1024
 const Prompt = `在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求）
 苹果味 桃子味 西瓜味
@@ -38,7 +41,7 @@ func Unknown(reason string) Result { return Result{Status: "unknown", Reason: re
 
 func Grade(answer string) Result {
 	if len(answer) > MaxAnswerBytes {
-		return Unknown("response_too_large")
+		return Unknown("answer_too_large")
 	}
 	extracted := ExtractAnswer(answer)
 	r := Result{Status: "unknown", Answer: answer, Reason: extracted.Reason, AnswerFormat: extracted.Format, FormatCompliant: extracted.Compliant}
