@@ -304,6 +304,7 @@
     "252_usage_export_tasks.sql": "b66aaaf5003171552b561fa5f2085b1ad357cc8566635c3cca011feb8f6853f1",
     "253_content_moderation_engine_meta.sql": "420af91eec85bdb60474640612a0f4d069db6ddfb21e6ed702b89713f3599287",
     "254_channel_reasoning_effort_multipliers.sql": "66feb546785dfa385d8efd268a40276cd8ffdb0cead7026cd79e339a3b69edf1",
-    "255_affiliate_ledger_operation_id.sql": "3823bfea5f64feb58f5fcebc341c6877eaefc97834b4cd652c8e83ad08ed78da"
+    "255_affiliate_ledger_operation_id.sql": "3823bfea5f64feb58f5fcebc341c6877eaefc97834b4cd652c8e83ad08ed78da",
+    "256_iq_current_health.sql": "cae5a91d5bdb956aec8467da333206bb7b95738b8e0a3f7008addf14916cc840"
   }
 }

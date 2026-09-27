@@ -33,7 +33,7 @@ func TestHTTPStreamContracts(t *testing.T) {
 		{"mislabeled stream", stream, "application/json", "smart", "correct_answer", true},
 		{"generic media", stream, "application/octet-stream", "smart", "correct_answer", true},
 		{"wrong answer", finalEvent("29"), "text/event-stream", "degraded", "wrong_answer", false},
-		{"HTML", `<html>21</html>`, "text/html", "unknown", "unsupported_media_type", false},
+		{"HTML", `<html>21</html>`, "text/html", "unknown", "upstream_html_response", false},
 		{"bad JSON", "data: {bad}\n\n", "text/event-stream", "unknown", "invalid_event_json", false},
 		{"critical duplicate", `data: {"type":"response.created","type":"response.completed"}` + "\n\n" + finalEvent("21"), "text/event-stream", "unknown", "duplicate_critical_field", false},
 		{"no completion", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n", "text/event-stream", "unknown", "incomplete_response", false},

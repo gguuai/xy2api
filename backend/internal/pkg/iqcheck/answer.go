@@ -127,7 +127,7 @@ func ExtractAnswer(answer string) ExtractedAnswer {
 		return ExtractedAnswer{Reason: "empty_response"}
 	}
 	if len(text) > MaxAnswerBytes {
-		return ExtractedAnswer{Reason: "response_too_large"}
+		return ExtractedAnswer{Reason: "answer_too_large"}
 	}
 	raw := text
 	if strings.HasPrefix(text, "```") {

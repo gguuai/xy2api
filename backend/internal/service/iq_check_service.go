@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -363,7 +365,11 @@ func (s *IQCheckService) probe(ctx context.Context, id int64, claims ...IQCheckC
 		resp, err = s.tester.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			return iqcheck.Unknown("interrupted")
+		}
+		var networkError net.Error
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
 			return iqcheck.Unknown("timeout")
 		}
 		return iqcheck.Unknown("request_failed")

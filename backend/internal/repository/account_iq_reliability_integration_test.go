@@ -96,7 +96,8 @@ func TestIQReliabilityPersistentRecovery(t *testing.T) {
 			current, e := repo.GetByID(ctx, a.ID)
 			require.NoError(t, e)
 			require.True(t, current.IQCheck.BlocksScheduling())
-			require.Equal(t, "degraded", current.IQCheck.Status)
+			require.Equal(t, "unknown", current.IQCheck.Status)
+			require.Equal(t, "degraded", current.IQCheck.LastValidStatus)
 			require.Equal(t, "retry_wait", current.IQCheck.ExecutionState)
 			require.Empty(t, current.IQCheck.LeaseToken)
 			require.Nil(t, current.IQCheck.StartedAt)
@@ -130,7 +131,7 @@ func TestIQReliabilityPersistentRecovery(t *testing.T) {
 				return
 			}
 			if scenario == "deadline" {
-				_, e = peer.ClaimIQChecks(ctx, now.Add(271*time.Second), 0)
+				_, e = peer.ClaimIQChecks(ctx, now.Add(391*time.Second), 0)
 				require.NoError(t, e)
 				records, e = repo.ListIQCheckRecords(ctx, a.ID)
 				require.NoError(t, e)
@@ -199,18 +200,28 @@ func TestIQReliabilityPersistentRecovery(t *testing.T) {
 			require.NoError(t, peer.CompleteIQCheck(ctx, second, final, after.Add(time.Second)))
 			current, e = repo.GetByID(ctx, a.ID)
 			require.NoError(t, e)
+			expectedAttempts, expectedSends := 2, 3
+			if scenario == "second_failure" {
+				require.NotNil(t, current.IQCheck.RetryAt)
+				thirdAt := *current.IQCheck.RetryAt
+				third := start(thirdAt)
+				require.NoError(t, peer.CompleteIQCheck(ctx, third, final, thirdAt.Add(time.Second)))
+				current, e = repo.GetByID(ctx, a.ID)
+				require.NoError(t, e)
+				expectedAttempts, expectedSends = 3, 4
+			}
 			require.Nil(t, current.IQCheck.RetryAt)
 			require.Equal(t, scenario == "second_failure", current.IQCheck.BlocksScheduling())
 			records, e = repo.ListIQCheckRecords(ctx, a.ID)
 			require.NoError(t, e)
 			require.Len(t, records, 2)
-			require.Len(t, records[0].Attempts, 2)
+			require.Len(t, records[0].Attempts, expectedAttempts)
 			require.NotNil(t, records[0].FinishedAt)
 			require.Equal(t, "http_503", records[0].Attempts[0].Reason)
 			require.Equal(t, final.Reason, records[0].Attempts[1].Reason)
 			var sends int
 			require.NoError(t, integrationDB.QueryRow(`SELECT sum(count) FROM account_iq_check_metrics_hourly WHERE account_id=$1 AND event='sent'`, a.ID).Scan(&sends))
-			require.Equal(t, 3, sends)
+			require.Equal(t, expectedSends, sends)
 		})
 	}
 }

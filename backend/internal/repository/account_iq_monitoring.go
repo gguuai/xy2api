@@ -13,12 +13,7 @@ import (
 )
 
 func finishIQSchedule(s *domain.IQCheck, r iqcheck.Result, now time.Time) {
-	s.LastRunStatus, s.LastRunReason = r.Status, r.Reason
-	if r.Status == "smart" || r.Status == "degraded" {
-		s.Status = r.Status
-		s.Reason = r.Reason
-		s.LastValidAt = &now
-	}
+	s.ObserveResult(r.Status, r.Reason, now)
 	s.RoundStartedAt = nil
 	s.RoundID = ""
 	s.RoundDeadline = nil
@@ -45,6 +40,12 @@ func finishIQSchedule(s *domain.IQCheck, r iqcheck.Result, now time.Time) {
 		interval = min(time.Duration(1<<max(0, s.FailureStreak-1))*interval, max(interval, time.Hour))
 	}
 	next := now.Add(interval)
+	// A depleted upstream can recover after a top-up. Recheck slowly without
+	// dispatching business traffic or permanently requiring a manual unpause.
+	if r.Reason == "quota_exhausted" || r.Reason == "http_402" {
+		next = now.Add(max(interval, 15*time.Minute))
+		s.ExecutionState, s.ExecutionReason = "deferred", "quota_exhausted"
+	}
 	if r.Diagnostic != nil {
 		d := r.Diagnostic
 		if d.RetryAfter != nil && (s.NotBefore == nil || d.RetryAfter.After(*s.NotBefore)) {
@@ -156,7 +157,7 @@ func (r *accountRepository) StartIQCheck(ctx context.Context, c service.IQCheckC
 		r.syncSchedulerAccountSnapshot(ctx, c.AccountID)
 		return false, nil
 	}
-	if s.RetryAt != nil && (s.AttemptCount != 1 || s.RoundDeadline == nil || !s.RoundDeadline.After(now)) {
+	if s.RetryAt != nil && (s.AttemptCount < 1 || s.AttemptCount >= iqcheck.MaxAttemptsPerRound || s.RoundDeadline == nil || !s.RoundDeadline.After(now)) {
 		if err := closeIQRetry(ctx, db, c.AccountID, &s, now, "retry_deadline_exceeded"); err != nil {
 			return false, err
 		}
@@ -252,7 +253,7 @@ func (r *accountRepository) StartIQCheck(ctx context.Context, c service.IQCheckC
 			s.RoundStartedAt = &now
 			s.RoundID = c.Token
 			s.AttemptCount = 0
-			deadline := now.Add(time.Duration(2*s.TimeoutSeconds+30) * time.Second)
+			deadline := now.Add(time.Duration(iqcheck.MaxAttemptsPerRound*s.TimeoutSeconds+30) * time.Second)
 			s.RoundDeadline = &deadline
 		}
 		s.AttemptCount++

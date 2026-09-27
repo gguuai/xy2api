@@ -109,25 +109,28 @@ func (s IQCheck) WithSettings(p *IQCheckSettings) IQCheck {
 
 // IQCheck keeps the independent quality gate separate from manual scheduling.
 type IQCheck struct {
-	RoundStartedAt   *time.Time `json:"round_started_at,omitempty"`
-	LastValidAt      *time.Time `json:"last_valid_at,omitempty"`
-	LastRunStatus    string     `json:"last_run_status,omitempty"`
-	LastRunReason    string     `json:"last_run_reason,omitempty"`
-	RoundID          string     `json:"round_id,omitempty"`
-	RoundDeadline    *time.Time `json:"round_deadline,omitempty"`
-	AttemptCount     int        `json:"attempt_count,omitempty"`
-	RetryAt          *time.Time `json:"retry_at,omitempty"`
-	BusyDeferrals    int        `json:"busy_deferrals,omitempty"`
-	LastAttemptAt    *time.Time `json:"last_attempt_at,omitempty"`
-	ExecutionState   string     `json:"execution_state,omitempty"`
-	ExecutionReason  string     `json:"execution_reason,omitempty"`
-	TaskID           string     `json:"task_id,omitempty"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	NotBefore        *time.Time `json:"not_before,omitempty"`
-	FailureStreak    int        `json:"failure_streak,omitempty"`
-	ProtocolFailures int        `json:"protocol_failures,omitempty"`
-	Freshness        string     `json:"freshness,omitempty"`
-	NextEligibleAt   *time.Time `json:"next_eligible_at,omitempty"`
+	LastValidStatus   string     `json:"last_valid_status,omitempty"`
+	LastValidReason   string     `json:"last_valid_reason,omitempty"`
+	SchedulingBlocked bool       `json:"scheduling_blocked,omitempty"`
+	RoundStartedAt    *time.Time `json:"round_started_at,omitempty"`
+	LastValidAt       *time.Time `json:"last_valid_at,omitempty"`
+	LastRunStatus     string     `json:"last_run_status,omitempty"`
+	LastRunReason     string     `json:"last_run_reason,omitempty"`
+	RoundID           string     `json:"round_id,omitempty"`
+	RoundDeadline     *time.Time `json:"round_deadline,omitempty"`
+	AttemptCount      int        `json:"attempt_count,omitempty"`
+	RetryAt           *time.Time `json:"retry_at,omitempty"`
+	BusyDeferrals     int        `json:"busy_deferrals,omitempty"`
+	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
+	ExecutionState    string     `json:"execution_state,omitempty"`
+	ExecutionReason   string     `json:"execution_reason,omitempty"`
+	TaskID            string     `json:"task_id,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	NotBefore         *time.Time `json:"not_before,omitempty"`
+	FailureStreak     int        `json:"failure_streak,omitempty"`
+	ProtocolFailures  int        `json:"protocol_failures,omitempty"`
+	Freshness         string     `json:"freshness,omitempty"`
+	NextEligibleAt    *time.Time `json:"next_eligible_at,omitempty"`
 
 	TimeoutSeconds  int        `json:"timeout_seconds"`
 	Enabled         bool       `json:"enabled"`
@@ -149,7 +152,8 @@ func DefaultIQCheck() IQCheck {
 }
 
 func (s IQCheck) Summary() IQCheck {
-	s = s.WithSettings(nil)
+	s = s.WithSettings(nil).CurrentAssessment()
+	s.SchedulingBlocked = s.BlocksScheduling()
 	if s.IntervalMinutes == 0 {
 		s.IntervalMinutes = 15
 	}
@@ -174,7 +178,34 @@ func (s IQCheck) Summary() IQCheck {
 	return s
 }
 
-func (s IQCheck) BlocksScheduling() bool { return s.Enabled && s.Status == "degraded" }
+// CurrentAssessment upgrades legacy last-valid-only state without losing history.
+func (s IQCheck) CurrentAssessment() IQCheck {
+	if s.LastValidStatus == "" && (s.Status == "smart" || s.Status == "degraded") {
+		s.LastValidStatus, s.LastValidReason = s.Status, s.Reason
+	}
+	if s.LastRunStatus == "unknown" {
+		s.Status, s.Reason = "unknown", s.LastRunReason
+	}
+	return s
+}
+
+// ObserveResult updates current health on every finished attempt, including retries.
+// Only a valid candy answer restores a failed account's quality gate.
+func (s *IQCheck) ObserveResult(status, reason string, now time.Time) {
+	*s = s.CurrentAssessment()
+	if status != "smart" && status != "degraded" {
+		status = "unknown"
+	}
+	s.Status, s.Reason = status, reason
+	s.LastRunStatus, s.LastRunReason, s.LastRunAt = status, reason, &now
+	if status == "smart" || status == "degraded" {
+		s.LastValidStatus, s.LastValidReason, s.LastValidAt = status, reason, &now
+	}
+}
+
+func (s IQCheck) BlocksScheduling() bool {
+	return s.Enabled && (s.Status == "degraded" || s.LastRunStatus == "unknown")
+}
 
 // CopySettings carries only editable configuration; duplicates and imports start disabled.
 func (s IQCheck) CopySettings() *IQCheckSettings {

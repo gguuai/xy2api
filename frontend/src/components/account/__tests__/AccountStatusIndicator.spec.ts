@@ -51,6 +51,14 @@ function makeAccount(overrides: Partial<Account>): Account {
 }
 
 describe('AccountStatusIndicator', () => {
+  it.each(['smart', 'unknown'] as const)('最近检测失败时避让账号，包括旧的 %s 摘要', async status => {
+    const account = makeAccount({ platform: 'openai', iq_check: { enabled: true, interval_minutes: 5, timeout_seconds: 120, model: 'fixture', reasoning_effort: 'low', output_mode: 'compat', status, last_run_status: 'unknown' } })
+    const wrapper = mount(AccountStatusIndicator, { props: { account }, global: { stubs: { Icon: true } } })
+    expect(wrapper.text()).toContain('admin.accounts.iqBlocked')
+    await wrapper.setProps({ account: { ...account, iq_check: { ...account.iq_check!, status: 'smart', last_run_status: 'smart' } } })
+    expect(wrapper.text()).not.toContain('admin.accounts.iqBlocked')
+    wrapper.unmount()
+  })
   it('Claude 5 模型限流时显示 Opus 和 Sonnet 的短别名', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {

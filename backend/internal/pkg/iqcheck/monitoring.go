@@ -9,36 +9,11 @@ import (
 	"time"
 )
 
+const MaxAttemptsPerRound = 3
+
 // Only documented machine codes enter diagnostics. Raw messages never do.
 func ReadUpstreamError(raw []byte, d *Diagnostic) string {
-	var env struct {
-		Error    json.RawMessage `json:"error"`
-		Response json.RawMessage `json:"response"`
-		Code     string          `json:"code"`
-		Type     string          `json:"type"`
-	}
-	if len(raw) > 8192 || validateEvent(raw) != nil || json.Unmarshal(raw, &env) != nil {
-		return "upstream_error"
-	}
-	if len(env.Response) > 0 {
-		return ReadUpstreamError(env.Response, d)
-	}
-	if len(env.Error) > 0 && string(env.Error) != "null" {
-		return ReadUpstreamError(env.Error, d)
-	}
-	codes := map[string]string{"insufficient_quota": "quota_exhausted", "billing_hard_limit_reached": "quota_exhausted", "billing_not_active": "quota_exhausted", "invalid_api_key": "authentication_unavailable", "invalid_token": "authentication_unavailable", "permission_denied": "permission_denied", "access_denied": "permission_denied", "policy_violation": "policy_denied", "model_not_found": "unsupported_model", "unsupported_model": "unsupported_model", "unsupported_parameter": "unsupported_parameter", "invalid_parameter": "unsupported_parameter", "rate_limit_exceeded": "rate_limited", "server_error": "upstream_unavailable"}
-	if reason, ok := codes[env.Code]; ok {
-		d.ErrorCode = env.Code
-		if _, ok = codes[env.Type]; ok {
-			d.ErrorType = env.Type
-		}
-		return reason
-	}
-	if reason, ok := codes[env.Type]; ok {
-		d.ErrorType = env.Type
-		return reason
-	}
-	return "upstream_error"
+	return classifyUpstreamError(raw, d, 0)
 }
 
 // RetryAfter returns an absolute lower bound. Overflow pauses instead of retrying early.
@@ -99,9 +74,9 @@ func FailurePolicy(r Result) (pause, transient, protocol bool) {
 	switch r.Reason {
 	case "zero_byte_response", "missing_final_message", "empty_final_text", "empty_response", "incomplete_response":
 		return false, true, true
-	case "quota_exhausted", "authentication_unavailable", "permission_denied", "policy_denied", "unsupported_model", "unsupported_parameter", "unsupported_account_type", "invalid_endpoint", "http_401", "http_400", "http_404":
+	case "authentication_unavailable", "permission_denied", "policy_denied", "unsupported_model", "unsupported_parameter", "unsupported_account_type", "invalid_endpoint", "http_401", "http_400", "http_404":
 		return true, false, false
-	case "http_403", "timeout", "request_failed", "request_cancelled", "response_read_failed", "rate_limited", "upstream_unavailable", "upstream_error", "interrupted":
+	case "http_403", "http_408", "timeout", "request_failed", "request_cancelled", "response_read_failed", "rate_limited", "upstream_unavailable", "upstream_error", "interrupted":
 		return false, true, false
 	}
 	if strings.HasPrefix(r.Reason, "http_5") || r.Reason == "http_429" {
@@ -128,11 +103,13 @@ func NotSent(r Result) bool {
 
 // Retryable is deliberately narrower than the periodic failure policy.
 func Retryable(r Result) bool {
-	if r.Status != "unknown" || r.Diagnostic != nil && (r.Diagnostic.Transport == "plugin" || r.Diagnostic.RetryAfterUnbounded) {
+	if r.Reason == "quota_exhausted" || r.Status != "unknown" || r.Diagnostic != nil && (r.Diagnostic.Transport == "plugin" || r.Diagnostic.RetryAfterUnbounded) {
 		return false
 	}
-	if pause, _, _ := FailurePolicy(r); pause {
+	if pause, _, protocol := FailurePolicy(r); pause {
 		return false
+	} else if protocol {
+		return true
 	}
 	if r.Diagnostic != nil && r.Diagnostic.Stage == "http" {
 		switch r.Diagnostic.HTTPStatus {
@@ -141,7 +118,7 @@ func Retryable(r Result) bool {
 		}
 	}
 	switch r.Reason {
-	case "request_failed", "timeout", "response_read_failed", "rate_limited", "http_429", "http_502", "http_503", "http_504":
+	case "request_failed", "timeout", "response_read_failed", "rate_limited", "http_408", "http_429", "http_502", "http_503", "http_504", "upstream_error", "incomplete_response", "unparseable_answer", "invalid_answer_structure", "ambiguous_answer":
 		return true
 	}
 	return false
