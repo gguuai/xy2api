@@ -137,7 +137,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			true,
 		)
 		if err != nil {
-			if handleControlledSchedulingStop(c, err) { return }
+			if handleControlledSchedulingStop(c, err) {
+				return
+			}
 			if failoverClientGone(c) {
 				reqLog.Info("openai_embeddings.account_select_aborted_client_disconnected", zap.Error(err))
 				return
@@ -211,7 +213,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
-			if handleControlledSchedulingStop(c, err) { return }
+			if handleControlledSchedulingStop(c, err) {
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {

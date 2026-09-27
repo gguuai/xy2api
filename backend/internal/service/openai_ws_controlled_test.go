@@ -17,7 +17,7 @@ import (
 func TestOpenAIWSControlledTurnKeepsRetryAndResetsNextTurn(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	svc := &OpenAIGatewayService{controlledScheduling: &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db)}}
 	ctx := NewControlledRequestContext(context.Background(), "responses")
 	first := controlledRequest(ctx)

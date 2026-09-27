@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/liulixin-lex/xy2api/internal/scheduling"
-	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9" //nolint:depguard // scheduling control notifications use the shared Redis client.
 )
 
 // ControlledSchedulingService joins the shared allocator to the existing hard
@@ -52,7 +52,7 @@ func (s *ControlledSchedulingService) Start() {
 		var messages <-chan *redis.Message
 		if s.redis != nil {
 			pubsub = s.redis.Subscribe(ctx, "xy2:scheduling:control")
-			defer pubsub.Close()
+			defer func() { _ = pubsub.Close() }()
 			messages = pubsub.Channel()
 		}
 		reconcile := func() {
@@ -93,7 +93,10 @@ func (s *ControlledSchedulingService) Close() {
 }
 func (s *ControlledSchedulingService) cancelLocal(c scheduling.ControlSnapshot) {
 	s.active.Range(func(_, value any) bool {
-		d := value.(*controlledDispatch)
+		d, ok := value.(*controlledDispatch)
+		if !ok || d == nil {
+			return true
+		}
 		if scheduling.ForceStopApplies(c, d.ticket) {
 			d.adminCancelled.Store(true)
 			d.cancel()
@@ -419,7 +422,7 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 			release = func() { once.Do(slot.ReleaseFunc) }
 		}
 		fallback := false
-		if safe && p.Retry.ReserveFallback && !(p.Mode == scheduling.ModePin && !p.PinFallback) {
+		if safe && p.Retry.ReserveFallback && (p.Mode != scheduling.ModePin || p.PinFallback) {
 			// Preview runs before BeginAttempt and before this dispatch's shared
 			// budget reservation. Include both in the hypothetical next attempt.
 			credit, readErr := s.Runtime.CanRetryAfterDispatch(ctx, p, r.ID, snapshot.Attempts > 0)

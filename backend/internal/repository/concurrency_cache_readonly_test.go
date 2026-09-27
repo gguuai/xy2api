@@ -15,9 +15,10 @@ func TestPeekAccountsLoadBatchPreservesExpiredLeases(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	m.SetTime(now)
 	client := redis.NewClient(&redis.Options{Addr: m.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx := context.Background()
-	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
 	for key, cutoff := range map[string]int64{accountSlotKeyPrefix + "1": now.Unix() - 900, liveAccountSlotKeyPrefix + "1": now.Unix() - 60} {
 		require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(cutoff - 1), Member: "expired"}, redis.Z{Score: float64(cutoff), Member: "boundary"}, redis.Z{Score: float64(cutoff + 1), Member: "active"}).Err())
 	}

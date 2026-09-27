@@ -36,7 +36,11 @@ func isolatedControlStore(t *testing.T) (*PostgresStore, *sql.DB) {
 	db, err := sql.Open("postgres", u.String())
 	require.NoError(t, err)
 	db.SetMaxOpenConns(12)
-	t.Cleanup(func() { db.Close(); _, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE"); admin.Close() })
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+		_, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE")
+		require.NoError(t, admin.Close())
+	})
 	_, err = db.Exec("CREATE TABLE scheduler_outbox(id BIGSERIAL PRIMARY KEY,event_type TEXT NOT NULL,account_id BIGINT); CREATE TABLE accounts(id BIGINT PRIMARY KEY,parent_account_id BIGINT REFERENCES accounts(id),schedulable BOOLEAN NOT NULL DEFAULT TRUE,status TEXT NOT NULL DEFAULT 'active',deleted_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); INSERT INTO accounts(id) VALUES(1),(3); INSERT INTO accounts(id,parent_account_id) VALUES(2,1)")
 	require.NoError(t, err)
 	migration, err := os.ReadFile("../../migrations/257_explicit_account_scheduling.sql")

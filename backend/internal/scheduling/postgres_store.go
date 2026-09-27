@@ -205,7 +205,7 @@ func (s *PostgresStore) Control(ctx context.Context, cmd ControlCommand) (Contro
 	if err != nil {
 		return ControlSnapshot{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	id, err := scopeSubject(ctx, tx, cmd.AccountID, cmd.Scope)
 	if err != nil {
 		return ControlSnapshot{}, err

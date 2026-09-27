@@ -32,7 +32,7 @@ func TestSchedulingUsageAckRequiresDurableAccounting(t *testing.T) {
 			t.Run(platform+"_"+scenario, func(t *testing.T) {
 				db, m, err := sqlmock.New()
 				require.NoError(t, err)
-				defer db.Close()
+				defer func() { _ = db.Close() }()
 				store := scheduling.NewPostgresStore(db)
 				control := &ControlledSchedulingService{Store: store}
 				logs := &openAIRecordUsageLogRepoStub{inserted: true}

@@ -7,7 +7,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/liulixin-lex/xy2api/internal/scheduling"
-	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9" //nolint:depguard // isolated Redis fixture for the read-only explain test.
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -61,10 +61,10 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 	ctx := context.Background()
 	db, m, e := sqlmock.New()
 	require.NoError(t, e)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { require.NoError(t, client.Close()) }()
 	scoped := scheduling.Policy{GroupID: 7, Model: "m", Enabled: true, Mode: scheduling.ModeSWRR, Version: 4, Profiles: []scheduling.LatencyProfile{{Name: "known-context", ContextMinTokens: 8192}}, Accounts: []scheduling.AccountRule{{AccountID: 1, Weight: 7}, {AccountID: 2, Weight: 3}, {AccountID: 3, Weight: 1}}}
 	inherited := scheduling.LatencyProfile{Name: "ws-default", Transport: "ws", HealthThresholdMS: 8000, RecoveryThresholdMS: 6000, AttemptTimeoutMS: 12000, TotalBudgetMS: 30000, MinAttemptWindowMS: 6000}
 	global := scheduling.Policy{Model: "m", Profiles: []scheduling.LatencyProfile{inherited}}
@@ -93,12 +93,16 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 	out, e := svc.Explain(ctx, json.RawMessage("{\"group_id\":7,\"model\":\"m\",\"protocol\":\"ws\",\"pin_account_id\":2}"))
 	require.NoError(t, e)
 	require.Equal(t, before, mr.Dump())
-	result := out.(map[string]any)
+	result, ok := out.(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "global", result["profile_source"])
 	require.Equal(t, "unknown", result["context_bucket"])
 	require.Equal(t, scheduling.ModePin, result["mode"])
-	require.Equal(t, int64(2), *result["selected_account_id"].(*int64))
-	rows := result["candidates"].([]schedulingExplainRow)
+	selected, ok := result["selected_account_id"].(*int64)
+	require.True(t, ok)
+	require.Equal(t, int64(2), *selected)
+	rows, ok := result["candidates"].([]schedulingExplainRow)
+	require.True(t, ok)
 	require.Equal(t, 1, rows[0].CurrentConcurrency)
 	require.False(t, rows[0].CapacityAvailable)
 	require.Equal(t, 1, rows[1].CurrentConcurrency)
@@ -111,10 +115,10 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 func TestExplainMissingScopedPolicyInheritsGlobalWithoutWrites(t *testing.T) {
 	db, m, e := sqlmock.New()
 	require.NoError(t, e)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { require.NoError(t, client.Close()) }()
 	m.ExpectQuery("SELECT version, policy").WithArgs(int64(7), "m").WillReturnError(sql.ErrNoRows)
 	raw, e := json.Marshal(scheduling.Policy{Model: "m", Version: 9, Enabled: true, Mode: scheduling.ModeFillFirst})
 	require.NoError(t, e)
@@ -124,11 +128,14 @@ func TestExplainMissingScopedPolicyInheritsGlobalWithoutWrites(t *testing.T) {
 	out, e := svc.Explain(context.Background(), json.RawMessage("{\"group_id\":7,\"model\":\"m\",\"context_tokens\":9000}"))
 	require.NoError(t, e)
 	require.Equal(t, before, mr.Dump())
-	result := out.(map[string]any)
+	result, ok := out.(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "global", result["policy_source"])
 	require.Equal(t, int64(9), result["policy_version"])
 	require.Equal(t, "8k_32k", result["context_bucket"])
-	require.Nil(t, result["selected_account_id"].(*int64))
+	selected, ok := result["selected_account_id"].(*int64)
+	require.True(t, ok)
+	require.Nil(t, selected)
 	require.NoError(t, m.ExpectationsWereMet())
 }
 func TestExplainEligibilityMatchesGatewayHardGatesWithoutMutations(t *testing.T) {

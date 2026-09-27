@@ -12,7 +12,7 @@ import (
 func TestControlledStopReasonPreservesAttemptOutcome(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	ctx, cancel := context.WithCancel(NewControlledRequestContext(context.Background(), "responses"))
 	r := controlledRequest(ctx)
 	r.currentAttemptID = "attempt-1"

@@ -38,7 +38,7 @@ func controlledBedrockFrames(t *testing.T, frames ...string) []byte {
 		copy(b[12:], headers)
 		copy(b[12+len(headers):], payload)
 		binary.BigEndian.PutUint32(b[len(b)-4:], crc32.ChecksumIEEE(b[:len(b)-4]))
-		output.Write(b)
+		_, _ = output.Write(b)
 	}
 	return output.Bytes()
 }
@@ -81,14 +81,14 @@ func (b *controlledProtocolFixture) FinishSchedulingFrames(err error) {
 	b.finishErr = err
 }
 
-func runControlledBedrockFixture(t *testing.T, body io.ReadCloser) (*streamingResult, error, *gin.Context, *httptest.ResponseRecorder) {
+func runControlledBedrockFixture(t *testing.T, body io.ReadCloser) (*streamingResult, *gin.Context, *httptest.ResponseRecorder, error) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	svc := &GatewayService{}
 	result, err := svc.handleBedrockStreamingResponse(c.Request.Context(), &http.Response{Body: body, Header: make(http.Header)}, c, &Account{ID: 7}, time.Now(), "claude-test")
-	return result, err, c, rec
+	return result, c, rec, err
 }
 
 func TestControlledBedrockDecodedFramesPreserveMetadataUntilSemantic(t *testing.T) {
@@ -99,7 +99,7 @@ func TestControlledBedrockDecodedFramesPreserveMetadataUntilSemantic(t *testing.
 		"{\"type\":\"message_stop\"}",
 	}
 	body := &controlledProtocolFixture{Reader: bytes.NewReader(controlledBedrockFrames(t, frames...))}
-	result, err, c, rec := runControlledBedrockFixture(t, body)
+	result, c, rec, err := runControlledBedrockFixture(t, body)
 	require.NoError(t, err)
 	require.True(t, c.Writer.Written())
 	require.NotNil(t, result.firstTokenMs)
@@ -118,7 +118,7 @@ func TestControlledBedrockDecodedFramesPreserveMetadataUntilSemantic(t *testing.
 func TestControlledBedrockEmptyAndTruncatedOutputs(t *testing.T) {
 	t.Run("metadata-only remains replayable", func(t *testing.T) {
 		body := &controlledProtocolFixture{Reader: bytes.NewReader(controlledBedrockFrames(t, "{\"type\":\"message_start\"}", "{\"type\":\"message_stop\"}"))}
-		result, err, c, rec := runControlledBedrockFixture(t, body)
+		result, c, rec, err := runControlledBedrockFixture(t, body)
 		var failover *UpstreamFailoverError
 		require.ErrorAs(t, err, &failover)
 		require.Equal(t, http.StatusBadGateway, failover.StatusCode)
@@ -128,7 +128,7 @@ func TestControlledBedrockEmptyAndTruncatedOutputs(t *testing.T) {
 	})
 	t.Run("post-semantic truncation cannot replay", func(t *testing.T) {
 		body := &controlledProtocolFixture{Reader: bytes.NewReader(controlledBedrockFrames(t, "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}"))}
-		result, err, c, rec := runControlledBedrockFixture(t, body)
+		result, c, rec, err := runControlledBedrockFixture(t, body)
 		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 		var failover *UpstreamFailoverError
 		require.False(t, errors.As(err, &failover))
@@ -139,14 +139,14 @@ func TestControlledBedrockEmptyAndTruncatedOutputs(t *testing.T) {
 	t.Run("invalid frame remains replayable", func(t *testing.T) {
 		raw := controlledBedrockFrames(t, "{\"type\":\"message_start\"}")
 		raw[len(raw)-1] ^= 1
-		_, err, c, _ := runControlledBedrockFixture(t, &controlledProtocolFixture{Reader: bytes.NewReader(raw)})
+		_, c, _, err := runControlledBedrockFixture(t, &controlledProtocolFixture{Reader: bytes.NewReader(raw)})
 		var failover *UpstreamFailoverError
 		require.ErrorAs(t, err, &failover)
 		require.False(t, c.Writer.Written())
 	})
 	t.Run("legacy metadata handling is retained", func(t *testing.T) {
 		raw := controlledBedrockFrames(t, "{\"type\":\"message_start\"}", "{\"type\":\"message_stop\"}")
-		result, err, c, _ := runControlledBedrockFixture(t, io.NopCloser(bytes.NewReader(raw)))
+		result, c, _, err := runControlledBedrockFixture(t, io.NopCloser(bytes.NewReader(raw)))
 		require.NoError(t, err)
 		require.NotNil(t, result.firstTokenMs)
 		require.True(t, c.Writer.Written())

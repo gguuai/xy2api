@@ -803,7 +803,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			hasPreviousResponseID,
 		)
 		maxAttempts := openAIWSReconnectRetryLimit + 1
-		if ControlledSchedulingEnabled(ctx) { maxAttempts = 1 }
+		if ControlledSchedulingEnabled(ctx) {
+			maxAttempts = 1
+		}
 		wsAttempts := 0
 		var wsResult *OpenAIForwardResult
 		var wsErr error
@@ -812,7 +814,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		wsPrevResponseRecoveryTried := false
 		wsInvalidEncryptedContentRecoveryTried := false
 		recoverPrevResponseNotFound := func(attempt int) bool {
-			if ControlledSchedulingEnabled(ctx) { return false }
+			if ControlledSchedulingEnabled(ctx) {
+				return false
+			}
 			if wsPrevResponseRecoveryTried {
 				return false
 			}
@@ -845,7 +849,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return true
 		}
 		recoverInvalidEncryptedContent := func(attempt int) bool {
-			if ControlledSchedulingEnabled(ctx) { return false }
+			if ControlledSchedulingEnabled(ctx) {
+				return false
+			}
 			if wsInvalidEncryptedContentRecoveryTried {
 				return false
 			}

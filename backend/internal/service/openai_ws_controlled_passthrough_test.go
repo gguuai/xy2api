@@ -76,7 +76,7 @@ func TestControlledPassthroughPauseRefusesNextDispatchWithoutRewritingOwner(t *t
 		}
 		return context.Background(), first, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	initial := []byte(`{"type":"response.create","model":"my-model"}`)
 	require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, initial))
 	require.Equal(t, initial, <-raw.writes)
@@ -107,7 +107,7 @@ func TestControlledPassthroughCountsOnlyActualCreatesAndRejectsOverlap(t *testin
 		calls++
 		return context.Background(), attempt, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, []byte(`{"type":"session.update","session":{"model":"m"}}`)))
 	require.Zero(t, calls)
 	<-raw.writes
@@ -127,7 +127,7 @@ func TestControlledPassthroughNotSentBudgetRejectionNeverWrites(t *testing.T) {
 	wrapper := newOpenAIWSControlledPassthroughFrameConn(context.Background(), raw, func([]byte, bool) (context.Context, controlledPassthroughAttempt, error) {
 		return context.Background(), attempt, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	require.ErrorIs(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, []byte(`{"type":"response.create"}`)), scheduling.ErrAttemptBudget)
 	sent, _, _, finished := attempt.counts()
 	require.Zero(t, sent)
@@ -143,7 +143,7 @@ func TestControlledPassthroughObservationDoesNotCommitClientOutput(t *testing.T)
 	wrapper := newOpenAIWSControlledPassthroughFrameConn(context.Background(), raw, func([]byte, bool) (context.Context, controlledPassthroughAttempt, error) {
 		return context.Background(), attempt, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, []byte(`{"type":"response.create"}`)))
 	<-raw.writes
 	raw.Send(`{"type":"response.output_text.delta","delta":"hello"}`)
@@ -167,7 +167,7 @@ func TestControlledPassthroughForceStopCancelsReadStartedBetweenTurns(t *testing
 	wrapper := newOpenAIWSControlledPassthroughFrameConn(context.Background(), raw, func([]byte, bool) (context.Context, controlledPassthroughAttempt, error) {
 		return context.Background(), attempt, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	started := make(chan struct{})
 	result := make(chan error, 1)
 	go func() { close(started); _, _, err := wrapper.ReadFrame(context.Background()); result <- err }()
@@ -192,7 +192,7 @@ func TestControlledPassthroughFirstTerminalKeepsNextTurnLive(t *testing.T) {
 		calls++
 		return NewControlledRequestContext(context.Background(), "ws"), d, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	body := []byte(`{"type":"response.create","previous_response_id":"owner"}`)
 	require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, body))
 	<-raw.writes
@@ -253,7 +253,7 @@ func TestControlledPassthroughRejectedNextTurnReleasesItsRequest(t *testing.T) {
 				}
 				return ctx, rejected, nil
 			})
-			defer wrapper.Close()
+			defer func() { require.NoError(t, wrapper.Close()) }()
 			body := []byte(`{"type":"response.create"}`)
 			require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, body))
 			<-raw.writes
@@ -278,7 +278,7 @@ func TestControlledPassthroughUsageWaitsForItsOwnSettledTicket(t *testing.T) {
 		d.onFinish = func() { controlledRequest(contexts[i]).history = []SchedulingAttemptTrace{{AttemptID: ids[i]}} }
 		return contexts[i], d, nil
 	})
-	defer wrapper.Close()
+	defer func() { require.NoError(t, wrapper.Close()) }()
 	var billed []string
 	for index := range contexts {
 		require.NoError(t, wrapper.WriteFrame(context.Background(), coderws.MessageText, []byte(`{"type":"response.create"}`)))

@@ -14,7 +14,7 @@ import (
 func TestPostgresPolicyMissingPreservesLegacy(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m.ExpectQuery(regexp.QuoteMeta("SELECT version, policy FROM scheduling_policies WHERE group_id=$1 AND model=$2")).WithArgs(int64(7), "test-model").WillReturnError(sql.ErrNoRows)
 	got, err := NewPostgresStore(db).GetPolicy(context.Background(), 7, "test-model")
 	require.NoError(t, err)
@@ -25,7 +25,7 @@ func TestPostgresPolicyMissingPreservesLegacy(t *testing.T) {
 func TestPostgresUnavailableFailsClosed(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m.ExpectBegin().WillReturnError(errors.New("unavailable"))
 	_, err = NewPostgresStore(db).BeginDispatch(context.Background(), DispatchRequest{RequestID: "r", AccountID: 1, NodeID: "n"})
 	require.Error(t, err)
@@ -36,7 +36,7 @@ func TestPostgresUnavailableFailsClosed(t *testing.T) {
 func TestPostgresInvalidControlDoesNotWrite(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	_, err = NewPostgresStore(db).Control(context.Background(), ControlCommand{AccountID: 1, Action: "session_drain", SessionDurationSeconds: 0, SessionMaxTurns: 1})
 	require.ErrorIs(t, err, ErrInvalidControl)
 	require.NoError(t, m.ExpectationsWereMet())
@@ -54,7 +54,7 @@ func TestForceStopEpochFencesDelayedCancellation(t *testing.T) {
 func TestPostgresRenewCannotResurrectExpiredAttempt(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m.ExpectExec("UPDATE scheduling_attempts SET lease_until").WithArgs("expired", int64(30000)).WillReturnResult(sqlmock.NewResult(0, 0))
 	require.ErrorIs(t, NewPostgresStore(db).RenewAttempt(context.Background(), "expired", 30*time.Second), ErrAttemptIdentity)
 	require.NoError(t, m.ExpectationsWereMet())
@@ -63,7 +63,7 @@ func TestPostgresRenewCannotResurrectExpiredAttempt(t *testing.T) {
 func TestPostgresRecordTerminalIntentIsDurableBeforeSettlement(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m.ExpectExec("UPDATE scheduling_attempts").WithArgs("ticket-1", "completed", "remote_terminal", true).WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, NewPostgresStore(db).RecordTerminalIntent(context.Background(), "ticket-1", "completed", "remote_terminal", true))
 	require.NoError(t, m.ExpectationsWereMet())
@@ -72,7 +72,7 @@ func TestPostgresRecordTerminalIntentIsDurableBeforeSettlement(t *testing.T) {
 func TestPostgresReconcileTerminalIntentsReadsOnlyValidPendingRows(t *testing.T) {
 	db, m, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	m.ExpectQuery("SELECT ticket_id").WillReturnRows(sqlmock.NewRows([]string{"ticket_id", "terminal_outcome", "terminal_usage_pending"}))
 	settled, err := NewPostgresStore(db).ReconcileTerminalIntents(context.Background())
 	require.NoError(t, err)

@@ -993,7 +993,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			return turnCtx, dispatch, nil
 		})
 		upstreamRelayConn = controlledRelay
-		defer controlledRelay.Close()
+		defer func() { _ = controlledRelay.Close() }()
 	}
 	completedTurns := atomic.Int32{}
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)

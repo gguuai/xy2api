@@ -109,7 +109,7 @@ func (b *schedulingMetadataBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if !b.truncated && n > 0 {
 		if b.buf.Len()+n <= 256*1024 {
-			b.buf.Write(p[:n])
+			_, _ = b.buf.Write(p[:n])
 		} else {
 			b.truncated = true
 			b.request.mu.Lock()

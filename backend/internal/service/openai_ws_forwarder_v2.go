@@ -231,7 +231,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if err != nil {
 		var agentDialErr *openAIWSDialError
 		if errors.As(err, &agentDialErr) {
-			if repairErr := s.repairControlledAgentIdentityTask(ctx, account, agentDialErr.StatusCode, agentDialErr.ResponseBody); repairErr != nil { return nil, repairErr }
+			if repairErr := s.repairControlledAgentIdentityTask(ctx, account, agentDialErr.StatusCode, agentDialErr.ResponseBody); repairErr != nil {
+				return nil, repairErr
+			}
 		}
 		if !ControlledSchedulingEnabled(ctx) && s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
 			*agentTaskRecoveryTried = true

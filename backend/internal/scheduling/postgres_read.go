@@ -25,7 +25,7 @@ func (s *PostgresStore) AccountActiveCounts(ctx context.Context, ids []int64) (m
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
 		var n int
@@ -212,7 +212,7 @@ func (s *PostgresStore) ListRequestAttempts(ctx context.Context, requestID strin
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]AttemptRecord, 0)
 	for rows.Next() {
 		var r AttemptRecord
@@ -244,7 +244,7 @@ func (s *PostgresStore) DispatchStatistics(ctx context.Context, groupID int64, m
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	byAccount := map[int64]*AccountDispatchStats{}
 	for rows.Next() {
 		var id, n int64

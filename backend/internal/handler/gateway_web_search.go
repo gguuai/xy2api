@@ -184,7 +184,9 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		if err == nil {
 			break
 		}
-		if handleControlledSchedulingStop(c, err) { return }
+		if handleControlledSchedulingStop(c, err) {
+			return
+		}
 		var failoverErr *service.UpstreamFailoverError
 		if !errors.As(err, &failoverErr) || !failoverErr.ShouldRetryNextAccount() {
 			break

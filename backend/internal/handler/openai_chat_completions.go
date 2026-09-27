@@ -181,7 +181,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			requestPlatform,
 		)
 		if err != nil {
-			if handleControlledSchedulingStop(c, err) { return }
+			if handleControlledSchedulingStop(c, err) {
+				return
+			}
 			if failoverClientGone(c) {
 				reqLog.Info("openai_chat_completions.account_select_aborted_client_disconnected", zap.Error(err))
 				return
@@ -317,7 +319,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					zap.Error(err),
 				)
 			} else {
-				if handleControlledSchedulingStop(c, err) { return }
+				if handleControlledSchedulingStop(c, err) {
+					return
+				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					if failoverClientGone(c) {

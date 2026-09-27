@@ -26,7 +26,7 @@ func TestIndependentReviewChatNoArgumentToolCompletesSemantic(t *testing.T) {
 func TestIndependentReviewFailedDispatchRecordDoesNotCountSend(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectExec("UPDATE scheduling_attempts").WillReturnError(errors.New("injected dispatch metrics write failure"))
 	policy := scheduling.NormalizePolicy(scheduling.Policy{Enabled: true, Model: "review"})
 	request := &ControlledRequest{Policy: policy, ReplaySafe: true, Started: time.Now(), Ledger: scheduling.NewAttemptLedger(policy.Retry, scheduling.LatencyProfile{}, time.Now(), time.Time{})}

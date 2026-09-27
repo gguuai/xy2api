@@ -104,7 +104,7 @@ func ValidatePolicy(raw Policy) error {
 		if v.ObserveOnly() {
 			continue
 		}
-		if !(0 < v.RecoveryThresholdMS && v.RecoveryThresholdMS < v.HealthThresholdMS && v.HealthThresholdMS < v.AttemptTimeoutMS && v.AttemptTimeoutMS <= v.TotalBudgetMS && 0 < v.MinAttemptWindowMS && v.MinAttemptWindowMS <= v.AttemptTimeoutMS) {
+		if v.RecoveryThresholdMS <= 0 || v.RecoveryThresholdMS >= v.HealthThresholdMS || v.HealthThresholdMS >= v.AttemptTimeoutMS || v.AttemptTimeoutMS > v.TotalBudgetMS || v.MinAttemptWindowMS <= 0 || v.MinAttemptWindowMS > v.AttemptTimeoutMS {
 			return fmt.Errorf("profile %s requires 0<R<H<T<=D and 0<M<=T", v.Name)
 		}
 		if v.TotalBudgetMS > 1800000 {

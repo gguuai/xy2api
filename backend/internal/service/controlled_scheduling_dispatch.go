@@ -652,7 +652,7 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 		for {
 			n, e := body.Read(buf)
 			if n > 0 {
-				prefix.Write(buf[:n])
+				_, _ = prefix.Write(buf[:n])
 			}
 			d.mu.Lock()
 			ready := !d.semantic.IsZero() || d.terminal

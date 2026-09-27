@@ -11,6 +11,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func profile() LatencyProfile {
@@ -570,7 +571,7 @@ func TestBusyProbeHonorsOverflowWait(t *testing.T) {
 	if err != nil || first.AccountID != 1 || !first.Probe {
 		t.Fatal(first, err)
 	}
-	defer rt.ReleaseSelection(ctx, first)
+	defer func() { require.NoError(t, rt.ReleaseSelection(ctx, first)) }()
 	if _, err = rt.Select(ctx, req); !errors.Is(err, ErrCapacity) {
 		t.Fatal("busy probe crossed an overflow-wait boundary", err)
 	}
@@ -587,12 +588,12 @@ func TestBusyProbeTriesSameTierBeforeOverflowWait(t *testing.T) {
 	if err != nil || first.AccountID != 1 || !first.Probe {
 		t.Fatal(first, err)
 	}
-	defer rt.ReleaseSelection(ctx, first)
+	defer func() { require.NoError(t, rt.ReleaseSelection(ctx, first)) }()
 	second, err := rt.Select(ctx, req)
 	if err != nil || second.AccountID != 2 || !second.Probe {
 		t.Fatal(second, err)
 	}
-	defer rt.ReleaseSelection(ctx, second)
+	defer func() { require.NoError(t, rt.ReleaseSelection(ctx, second)) }()
 	if _, err = rt.Select(ctx, req); !errors.Is(err, ErrCapacity) {
 		t.Fatal("busy same-tier probes crossed the wait boundary", err)
 	}

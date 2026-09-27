@@ -31,22 +31,3 @@ func blockControlledGrokTeamModelLimit(ctx context.Context, account *Account, mo
 		ledger.BlockFailureDomain(domain)
 	}
 }
-
-// Called only after an observed provider limit, with the dispatch's verified account.
-func (d *controlledDispatch) blockKnownRateLimitDomains(account *Account) {
-	if d == nil || d.request == nil || account == nil {
-		return
-	}
-	d.request.mu.Lock()
-	ledger, model := d.request.Ledger, d.request.Model
-	if model == "" {
-		model = d.request.Policy.Model
-	}
-	d.request.mu.Unlock()
-	if ledger == nil {
-		return
-	}
-	for _, domain := range controlledAccountFailureDomains(account, model) {
-		ledger.BlockFailureDomain(domain)
-	}
-}

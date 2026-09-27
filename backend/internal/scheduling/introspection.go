@@ -41,7 +41,7 @@ func (s *RedisStore) inspectAllocation(ctx context.Context, pool string, now tim
 	if len(raw) != 4 {
 		return v, ErrSharedState
 	}
-	scores, ok := raw[0].([]interface{})
+	scores, ok := raw[0].([]any)
 	if !ok {
 		return v, ErrSharedState
 	}
@@ -62,14 +62,14 @@ func (s *RedisStore) inspectAllocation(ctx context.Context, pool string, now tim
 		}
 		v.scores[id] = val
 	}
-	reservations, ok := raw[1].([]interface{})
+	reservations, ok := raw[1].([]any)
 	if !ok {
 		return v, ErrSharedState
 	}
 	for i := 0; i+1 < len(reservations); i += 2 {
 		v.reservations[fmt.Sprint(reservations[i])] = fmt.Sprint(reservations[i+1])
 	}
-	expired, ok := raw[2].([]interface{})
+	expired, ok := raw[2].([]any)
 	if !ok {
 		return v, ErrSharedState
 	}
@@ -236,7 +236,7 @@ func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (S
 		if policy.Mode == ModePin && !policy.PinFallback {
 			return out, ErrNoCandidate
 		}
-		if policy.Overflow == OverflowWait && !hasSamePriorityOption(options, chosen) && !(policy.Mode == ModePin && policy.PinFallback) {
+		if policy.Overflow == OverflowWait && !hasSamePriorityOption(options, chosen) && (policy.Mode != ModePin || !policy.PinFallback) {
 			return out, ErrCapacity
 		}
 		if req.Attempted == nil {

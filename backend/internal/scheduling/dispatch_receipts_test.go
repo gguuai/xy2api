@@ -3,7 +3,6 @@ package scheduling
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -17,7 +16,7 @@ func runDispatchReceiptChecks(t *testing.T, client *redis.Client) {
 	ctx := context.Background()
 	r := NewRuntime(NewRedisStore(client))
 	second := redis.NewClient(client.Options())
-	defer second.Close()
+	defer func() { require.NoError(t, second.Close()) }()
 	other := NewRuntime(NewRedisStore(second))
 	req := SelectionRequest{Policy: Policy{GroupID: 487, Model: "receipt-test"}, Profile: profile(), Candidates: []Candidate{candidate(1, 0), candidate(2, 0)}}
 	for _, c := range req.Candidates {
@@ -141,7 +140,9 @@ func runDispatchReceiptChecks(t *testing.T, client *redis.Client) {
 
 func TestDispatchReceiptsCompensatePreparedCalls(t *testing.T) {
 	r, _ := testRuntime(t)
-	runDispatchReceiptChecks(t, r.store.client.(*redis.Client))
+	client, ok := r.store.client.(*redis.Client)
+	require.True(t, ok)
+	runDispatchReceiptChecks(t, client)
 }
 func TestDispatchReceiptsRealRedis(t *testing.T) {
 	addr := os.Getenv("SCHEDULING_TEST_RECEIPT_REDIS_ADDR")
@@ -149,9 +150,9 @@ func TestDispatchReceiptsRealRedis(t *testing.T) {
 		t.Skip("isolated receipt Redis endpoint not configured")
 	}
 	client := redis.NewClient(&redis.Options{Addr: addr, MaxRetries: -1})
-	defer client.Close()
+	defer func() { require.NoError(t, client.Close()) }()
 	require.NoError(t, client.FlushDB(context.Background()).Err())
-	t.Log(fmt.Sprintf("running independent workers against isolated Redis %s", addr))
+	t.Logf("running independent workers against isolated Redis %s", addr)
 	runDispatchReceiptChecks(t, client)
 }
 

@@ -168,7 +168,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			parsed.RequiredCapabilityForModel(channelMapping.MappedModel),
 		)
 		if err != nil {
-			if handleControlledSchedulingStop(c, err) { return }
+			if handleControlledSchedulingStop(c, err) {
+				return
+			}
 			if failoverClientGone(c) {
 				reqLog.Info("openai.images.account_select_aborted_client_disconnected", zap.Error(err))
 				return
@@ -290,7 +292,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					)
 					return
 				}
-				if handleControlledSchedulingStop(c, err) { return }
+				if handleControlledSchedulingStop(c, err) {
+					return
+				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					h.gatewayService.ReportOpenAIAccountScheduleResultWithContext(c.Request.Context(), account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)

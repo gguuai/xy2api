@@ -512,7 +512,7 @@ func (r *Runtime) Select(ctx context.Context, req SelectionRequest) (Decision, e
 		if policy.Mode == ModePin && !policy.PinFallback {
 			return Decision{}, ErrNoCandidate
 		}
-		if policy.Overflow == OverflowWait && !hasSamePriorityOption(options, chosen) && !(policy.Mode == ModePin && policy.PinFallback) {
+		if policy.Overflow == OverflowWait && !hasSamePriorityOption(options, chosen) && (policy.Mode != ModePin || !policy.PinFallback) {
 			return Decision{}, ErrCapacity
 		}
 		attempted := make(map[int64]bool, len(req.Attempted)+1)

@@ -194,7 +194,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			return
 		}
 
-		if handleControlledSchedulingStop(c, err) { return }
+		if handleControlledSchedulingStop(c, err) {
+			return
+		}
 		var failoverErr *service.UpstreamFailoverError
 		if !errors.As(err, &failoverErr) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultWithContext(c.Request.Context(), account, openAIAccountScheduleModel(c, account, requestedModel, false, result), false, nil, err)

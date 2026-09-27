@@ -97,7 +97,7 @@ func TestInspectionReevaluatesBusyProbeAcrossBestEffortTiers(t *testing.T) {
 	probe, err := r.store.acquireProbe(ctx, req, 1, false)
 	require.NoError(t, err)
 	require.NotEmpty(t, probe)
-	defer r.store.ReleaseProbe(ctx, probe)
+	defer func() { require.NoError(t, r.store.ReleaseProbe(ctx, probe)) }()
 	before := m.Dump()
 	peek, err := r.InspectSelection(ctx, req)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestInspectionRealRedis(t *testing.T) {
 		t.Skip("isolated Redis endpoint not configured")
 	}
 	client := redis.NewClient(&redis.Options{Addr: addr})
-	defer client.Close()
+	defer func() { require.NoError(t, client.Close()) }()
 	ctx := context.Background()
 	require.NoError(t, client.FlushDB(ctx).Err())
 	// The test owns its disposable Redis database. DUMP ignores access metadata.

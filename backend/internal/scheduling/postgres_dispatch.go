@@ -63,7 +63,7 @@ func (s *PostgresStore) BeginDispatch(ctx context.Context, r DispatchRequest) (D
 	if err != nil {
 		return ticket, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	family, err := familyFor(ctx, tx, r.AccountID)
 	if err != nil {
 		return ticket, err
@@ -168,7 +168,7 @@ func (s *PostgresStore) SettleAttempt(ctx context.Context, ticketID, outcome str
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var accountID, familyID int64
 	// Identity is immutable. Read it without holding a ticket lock, then acquire
 	// family -> account -> ticket, matching admission and force-stop lock order.
@@ -268,7 +268,7 @@ func (s *PostgresStore) ReconcileTerminalIntents(ctx context.Context) (int64, er
 	for rows.Next() {
 		var value intent
 		if err = rows.Scan(&value.ticketID, &value.outcome, &value.usagePending); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		intents = append(intents, value)

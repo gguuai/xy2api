@@ -1631,9 +1631,11 @@ func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
 }
 
 func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(c *gin.Context, account *Account, payload []byte, message string, headers http.Header, canonicalModel ...string) (int, bool) {
- ctx := context.Background()
- if c != nil && c.Request != nil { ctx = c.Request.Context() }
- return s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, c, account, payload, message, headers, canonicalModel...)
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(ctx, c, account, payload, message, headers, canonicalModel...)
 }
 
 func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffectsWithContext(
