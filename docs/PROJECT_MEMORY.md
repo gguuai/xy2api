@@ -4,9 +4,9 @@
 
 ## 当前交接状态
 
-### 糖果检测当前健康与长响应兼容（2026-09-27，本地实现）
+### 糖果检测当前健康与长响应兼容（2026-09-27，PR #65）
 
-- 原始副本 `/xy2/xy2api-original` 保持 `1cf9708e73c8c189968016852b07082e1c30e187`；修改在 `/xy2/xy2api`、`fix/iq-current-health`，未推送、未发版、未部署。
+- 原始副本 `/xy2/xy2api-original` 保持 `1cf9708e73c8c189968016852b07082e1c30e187`；实现提交 `e9b546bf77326e5253728127e50a2af050f18679` 已推送至 `fix/iq-current-health`，[PR #65](https://github.com/liulixin-lex/xy2api/pull/65) 面向 main 开放评审。发布候选位于 `/xy2/artifacts/iq-candy-20260927/pr-source`，保留主工作区并行研究记录；未合并、未发版、未部署。
 - 按用户决定只用糖果题21；当前状态每次尝试更新，错误即未知并避让业务流量，历史有效状态单独保留。正常1次，可恢复异常最多共3次，答错不补试；余额不足至少15分钟自动复检。
 - 对指定生产请求的只读查询确认：旧解析器累计读取262145字节触及256 KiB限制。响应是HTTP200/SSE，不能据此断言实际答案错误或正确；原始回答未保存。新解析器 v5 总读取8 MiB、单事件2 MiB、答案64 KiB分开限制，保留完整终态和冲突校验；增加错误分类和限制诊断。
 - Go IQ/质量路由单元、隔离PostgreSQL/Redis集成、核心race、迁移校验及服务构建通过；前端27项回归、类型、定向ESLint及生产构建通过。首次集成旧断言失败已修复，失败证据保留。补充socket超时测试结果见账本最新事件。
@@ -275,7 +275,7 @@ Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本
 
 ## 进行中的工作
 
-- `20260927-iq-current-health-pr`：用户已授权提交、推送并创建 PR；复用 fix/iq-current-health 和原四角色，业务实现不变。不合并、不发版、不部署；核对远端与认证后执行发布。
+- `20260927-iq-current-health-pr`：实现已提交、推送并创建 PR #65；候选和原四角色已更新，完整三态、远端 head 与 CI 状态见固定账本最新事件。未合并、未发版、未部署。
 
 - `20260927-iq-current-health`：本地代码与测试完成；四角色封装和回滚验收结果见固定账本最终事件。生产仍为只读，发布和部署未执行。
 
@@ -1070,3 +1070,10 @@ pnpm --dir frontend run build
 - Go IQ/质量路由单元、隔离PostgreSQL/Redis集成、核心race、迁移校验及服务构建通过；前端27项回归、类型、定向ESLint及生产构建通过。首次集成旧断言失败已修复，失败证据保留。补充socket超时测试结果见账本最新事件。
 - 同输入基线错误后仍smart且可调度、长流21/29均unknown；修改后错误为unknown并阻断，长流分别smart/degraded。完整三态、补丁重建、回滚哈希以固定账本 `TRANSACTION_VERIFIED` 事件为准。
 - 四角色固定为 `/xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}`，源码回滚依赖兄弟 `BASELINE.tar`；不操作生产或数据库。操作说明 `docs/IQ_CURRENT_HEALTH.md`、`docs/OPENAI_IQ_CHECK.md`。后续部署需统一旧工作者状态语义并备份数据库；本轮未执行生产上线。
+
+### 2026-09-27：糖果检测提交与 PR 交接
+
+- 用户授权提交、推送和创建 PR；实现提交 `e9b546bf77326e5253728127e50a2af050f18679`，PR #65（https://github.com/liulixin-lex/xy2api/pull/65）面向 main。GitHub 认证完成后通过正常分支推送，未强推或修改保护规则。
+- 发布前发现主工作区新增并行调度研究记录，保留其内容；从已验收提交建立隔离发布候选，PR 仅含本轮 IQ 实现、测试和交接。业务代码沿用已通过的验证结果。
+- 沿用 `/xy2/artifacts/iq-candy-20260927/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}`；同输入三态、补丁重建、回滚哈希与角色重开结果按最新 `TRANSACTION_VERIFIED` 事件核验。远端最终提交和 CI 查询结果见 `PR_RESULT.json` 与验证账本，不能把推送成功当作 CI 通过。
+- 本轮没有合并 PR、发版、部署或生产数据写入。
