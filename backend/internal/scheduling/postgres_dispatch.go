@@ -119,10 +119,20 @@ func (s *PostgresStore) BeginDispatch(ctx context.Context, r DispatchRequest) (D
 	}
 	ticket.AccountEpoch = ac.Epoch
 	ticket.FamilyEpoch = fc.Epoch
+	if r.Failure != nil && r.Failure.AccountID != r.AccountID {
+		return ticket, ErrInvalidControl
+	}
+	if err = admitFailureDomains(ctx, tx, r.Failure); err != nil {
+		return ticket, err
+	}
 	err = tx.QueryRowContext(ctx, "INSERT INTO scheduling_attempts(ticket_id,request_id,account_id,family_id,session_id,node_id,account_epoch,family_epoch,state,lease_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatched',NOW()+($9 * INTERVAL '1 millisecond')) RETURNING lease_until", ticket.TicketID, r.RequestID, r.AccountID, family, r.SessionID, r.NodeID, ac.Epoch, fc.Epoch, r.LeaseDuration.Milliseconds()).Scan(&ticket.LeaseUntil)
 	if err != nil {
 		return ticket, err
 	}
+	if err = persistFailureAdmission(ctx, tx, ticket.TicketID, r.Failure); err != nil {
+		return ticket, err
+	}
+	ticket.Failure = r.Failure
 	if r.SessionID != "" {
 		_, err = tx.ExecContext(ctx, "INSERT INTO scheduling_owner_sessions(account_id,family_id,session_id) VALUES($1,$2,$3) ON CONFLICT(account_id,session_id) DO UPDATE SET last_seen_at=NOW()", r.AccountID, family, r.SessionID)
 		if err != nil {
@@ -225,9 +235,9 @@ func (s *PostgresStore) RecordTerminalIntent(ctx context.Context, ticketID, outc
 	result, err := s.db.ExecContext(ctx, `UPDATE scheduling_attempts
 		SET metrics = metrics || jsonb_build_object(
 			'terminal_intent', true,
-			'terminal_outcome', $2,
-			'terminal_certainty', $3,
-			'terminal_usage_pending', $4)
+			'terminal_outcome', $2::text,
+			'terminal_certainty', $3::text,
+			'terminal_usage_pending', $4::boolean)
 		WHERE ticket_id=$1 AND state<>'settled'`, ticketID, outcome, certainty, usagePending)
 	if err != nil {
 		return err

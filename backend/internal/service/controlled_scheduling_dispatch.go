@@ -22,44 +22,52 @@ import (
 
 type controlledDispatchContextKey struct{}
 type controlledDispatch struct {
-	service            *ControlledSchedulingService
-	request            *ControlledRequest
-	ticket             scheduling.DispatchTicket
-	budget             scheduling.BudgetReservation
-	decision           scheduling.Decision
-	ctx                context.Context
-	cancel             context.CancelFunc
-	mu                 sync.Mutex
-	once               sync.Once
-	sent               bool
-	semantic           time.Time
-	answer             time.Time
-	firstEvent         time.Time
-	started            time.Time
-	attemptDeadline    time.Time
-	terminal           bool
-	upstreamFailure    bool
-	timeout            bool
-	clipped            bool
-	status             int
-	timer              *time.Timer
-	done               chan struct{}
-	semanticReady      chan struct{}
-	adminCancelled     atomic.Bool
-	excluded           bool
-	toolPending        bool
-	retryAfter         time.Time
-	parser             semanticEventParser
-	semanticObservable bool
-	viableFallback     bool
-	commitToolPending  bool
+	service              *ControlledSchedulingService
+	request              *ControlledRequest
+	ticket               scheduling.DispatchTicket
+	budget               scheduling.BudgetReservation
+	decision             scheduling.Decision
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	mu                   sync.Mutex
+	once                 sync.Once
+	sent                 bool
+	semantic             time.Time
+	answer               time.Time
+	firstEvent           time.Time
+	started              time.Time
+	attemptDeadline      time.Time
+	terminal             bool
+	upstreamFailure      bool
+	timeout              bool
+	clipped              bool
+	status               int
+	timer                *time.Timer
+	done                 chan struct{}
+	semanticReady        chan struct{}
+	adminCancelled       atomic.Bool
+	excluded             bool
+	toolPending          bool
+	retryAfter           time.Time
+	parser               semanticEventParser
+	semanticObservable   bool
+	viableFallback       bool
+	healthObservation    scheduling.Observation
+	failureEvidence      scheduling.FailureEvidence
+	commitToolPending    bool
+	transportTerminal    bool
+	responseDrainTimeout bool
 }
 
-func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, accountID int64, concurrency int) (*controlledDispatch, error) {
+func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, accountID int64, concurrency int) (dispatch *controlledDispatch, dispatchErr error) {
 	if s == nil || controlledRequest(ctx) == nil {
 		return nil, nil
 	}
 	r := controlledRequest(ctx)
+	liveParent := ctx
+	ctx, stopPreparation := controlledPreparationContext(ctx, r)
+	defer stopPreparation()
+	defer func() { dispatchErr = controlledPreparationError(liveParent, ctx, dispatchErr) }()
 	r.mu.Lock()
 	p := r.Policy
 	ledger := r.Ledger
@@ -106,6 +114,44 @@ func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, account
 			}
 		}
 	}
+	var healthObservation scheduling.Observation
+	if p.Enabled {
+		admission := controlledFailureAdmission(ctx)
+		if admission == nil {
+			a, err := s.accounts.GetByID(ctx, accountID)
+			if err != nil {
+				return nil, err
+			}
+			if a == nil {
+				return nil, scheduling.ErrNoCandidate
+			}
+			frozen, err := s.Store.FreezeFailureAdmission(ctx, accountID, a.GetMappedModel(p.Model))
+			if err != nil {
+				return nil, err
+			}
+			admission = &frozen
+			ctx = context.WithValue(ctx, controlledFailureAdmissionKey{}, admission)
+		}
+		r.mu.Lock()
+		healthObservation = scheduling.Observation{AccountID: accountID, Model: admission.Model, Profile: r.Profile, Reasoning: r.Reasoning, Transport: r.Protocol, ContextBucket: controlledBucket(r), HealthIdentity: admission.HealthIdentity}
+		r.mu.Unlock()
+		if decision.HealthFence != nil && decision.HealthFence.Model != healthObservation.Model {
+			// Adapters may canonicalize after the candidate model mapping.
+			// Re-admit the actual upstream model from its own health record;
+			// never transfer predicted-model health to this model.
+			decision.HealthFence = nil
+			decision.Reason += "_actual_model_revalidated"
+		}
+		fence, err := s.Runtime.FreezeSelectedHealth(ctx, accountID, healthObservation.Model, healthObservation.Profile, healthObservation.Reasoning, healthObservation.ContextBucket, healthObservation.Transport, healthObservation.HealthIdentity, decision)
+		if err != nil {
+			if errors.Is(err, scheduling.ErrHealthSelectionStale) && !owner && p.Mode != scheduling.ModePin {
+				return nil, s.invalidateControlledSelection(ctx, r, decision)
+			}
+			return nil, err
+		}
+		healthObservation.Fence = &fence
+		decision.Probe = fence.State == scheduling.HealthUnknown || fence.State == scheduling.HealthHalfOpen || fence.State == scheduling.HealthRecovering
+	}
 	var br scheduling.BudgetReservation
 	if p.Enabled {
 		if ledger == nil {
@@ -127,13 +173,13 @@ func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, account
 	if decision.Probe && (concurrency <= 0 || concurrency > 1) {
 		concurrency = 1
 	}
-	ticket, e := s.Store.BeginDispatch(ctx, scheduling.DispatchRequest{RequestID: r.ID, AccountID: accountID, SessionID: sessionID, NodeID: s.node, LeaseDuration: 2 * time.Minute, HardConcurrency: concurrency})
+	ticket, e := s.Store.BeginDispatch(ctx, scheduling.DispatchRequest{RequestID: r.ID, AccountID: accountID, SessionID: sessionID, NodeID: s.node, LeaseDuration: 2 * time.Minute, HardConcurrency: concurrency, Failure: controlledFailureAdmission(ctx)})
 	if e != nil {
 		if br.ID != "" {
-			_ = s.Runtime.RefundDispatchBudget(context.WithoutCancel(ctx), br)
+			s.refundDispatchBudgetContext(ctx, br)
 		}
-		if p.Enabled && !owner && p.Mode != scheduling.ModePin && (errors.Is(e, scheduling.ErrControlBlocked) || errors.Is(e, scheduling.ErrCapacity)) {
-			s.releaseDecision(decision)
+		if p.Enabled && !owner && p.Mode != scheduling.ModePin && (errors.Is(e, scheduling.ErrControlBlocked) || errors.Is(e, scheduling.ErrCapacity) || errors.Is(e, scheduling.ErrFailureDomainBlocked) || errors.Is(e, scheduling.ErrVersionConflict)) {
+			s.releaseDecisionContext(ctx, decision)
 			r.mu.Lock()
 			r.decisionPending = false
 			r.gateRejections++
@@ -144,14 +190,29 @@ func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, account
 			}
 			return nil, &UpstreamFailoverError{StatusCode: 503, PreDispatchSelectionInvalidated: true, ClientMessage: "candidate lost dispatch admission"}
 		}
-		if !errors.Is(e, scheduling.ErrControlBlocked) && !errors.Is(e, scheduling.ErrCapacity) && !errors.Is(e, scheduling.ErrAttemptIdentity) {
+		if !errors.Is(e, scheduling.ErrControlBlocked) && !errors.Is(e, scheduling.ErrCapacity) && !errors.Is(e, scheduling.ErrAttemptIdentity) && !errors.Is(e, scheduling.ErrFailureDomainBlocked) && !errors.Is(e, scheduling.ErrVersionConflict) {
 			return nil, fmt.Errorf("%w: %v", scheduling.ErrSharedState, e)
 		}
 		return nil, e
 	}
-	live, cancel := context.WithCancel(ctx)
-	d := &controlledDispatch{service: s, request: r, ticket: ticket, budget: br, decision: decision, cancel: cancel, done: make(chan struct{}), semanticReady: make(chan struct{}), semanticObservable: true}
+	live, cancel := context.WithCancel(liveParent)
+	d := &controlledDispatch{service: s, request: r, ticket: ticket, budget: br, decision: decision, cancel: cancel, done: make(chan struct{}), semanticReady: make(chan struct{}), semanticObservable: true, healthObservation: healthObservation}
 	d.ctx = context.WithValue(live, controlledDispatchContextKey{}, d)
+	if leaseErr := (scheduling.RedisFailureDomains{Client: s.redis}).Acquire(ctx, ticket); leaseErr != nil {
+		d.finishPreparationFailure(leaseErr)
+		if p.Enabled && !owner && p.Mode != scheduling.ModePin && errors.Is(leaseErr, scheduling.ErrFailureDomainBlocked) {
+			r.mu.Lock()
+			r.gateRejections++
+			r.decisionPending = false
+			rejections := r.gateRejections
+			r.mu.Unlock()
+			if rejections >= 128 {
+				return nil, scheduling.ErrAttemptBudget
+			}
+			return nil, &UpstreamFailoverError{StatusCode: 503, PreDispatchSelectionInvalidated: true, ClientMessage: "domain recovery lease occupied"}
+		}
+		return nil, leaseErr
+	}
 	s.active.Store(ticket.TicketID, d)
 	r.mu.Lock()
 	r.finish = func() {
@@ -167,7 +228,7 @@ func (d *controlledDispatch) Context() context.Context {
 	}
 	return d.ctx
 }
-func (d *controlledDispatch) MarkSent() error {
+func (d *controlledDispatch) MarkSent() (sendErr error) {
 	if d == nil {
 		return nil
 	}
@@ -180,8 +241,11 @@ func (d *controlledDispatch) MarkSent() error {
 		return err
 	}
 	r := d.request
+	prepare, stopPreparation := controlledPreparationContext(d.ctx, r)
+	defer stopPreparation()
+	defer func() { sendErr = controlledPreparationError(d.ctx, prepare, sendErr) }()
 	r.mu.Lock()
-	p, ledger, safe, owner := r.Policy, r.Ledger, r.ReplaySafe, r.owner
+	p, ledger, safe, owner, fallback := r.Policy, r.Ledger, r.ReplaySafe, r.owner, r.fallback
 	r.mu.Unlock()
 	attempt := 1
 	if p.Enabled {
@@ -209,21 +273,26 @@ func (d *controlledDispatch) MarkSent() error {
 	// Complete all fallible preparation before charging the actual-attempt ledger.
 	// A later Redis/cancellation failure is settled as not_sent and compensated;
 	// the statistics query excludes those aborted dispatch tickets.
-	if err := d.service.Store.RecordAttemptMetrics(d.ctx, d.ticket.TicketID, map[string]any{"sent_at": time.Now().UTC().Format(time.RFC3339Nano), "group_id": p.GroupID, "model": p.Model, "policy_version": p.Version, "dispatch_kind": kind, "attempt_number": attempt, "priority": d.decision.Priority, "reason": d.decision.Reason, "metric_version": SchedulingMetricVersion}); err != nil {
+	if err := d.service.Store.RecordAttemptMetrics(prepare, d.ticket.TicketID, map[string]any{"sent_at": time.Now().UTC().Format(time.RFC3339Nano), "group_id": p.GroupID, "model": p.Model, "policy_version": p.Version, "dispatch_kind": kind, "attempt_number": attempt, "priority": d.decision.Priority, "reason": d.decision.Reason, "metric_version": SchedulingMetricVersion}); err != nil {
 		return fmt.Errorf("%w: dispatch record: %v", scheduling.ErrSharedState, err)
 	}
 	if p.Enabled {
 		if d.budget.ID != "" {
-			if err := d.service.Runtime.CommitDispatchBudget(d.ctx, d.budget); err != nil {
+			if err := d.service.Runtime.CommitDispatchBudget(prepare, d.budget); err != nil {
 				return err
 			}
 		}
 		if d.decision.ReservationID != "" {
-			if err := d.service.Runtime.CommitSelection(d.ctx, d.decision); err != nil {
+			if err := d.service.Runtime.CommitSelection(prepare, d.decision); err != nil {
 				return err
 			}
 		}
-		if err := d.ctx.Err(); err != nil {
+		if safe && fallback {
+			if allowed, err := d.service.Runtime.CanRetry(prepare, p); err == nil && allowed {
+				d.viableFallback = true
+			}
+		}
+		if err := prepare.Err(); err != nil {
 			return err
 		}
 		if err := ledger.BeginAttempt(d.ticket.AccountID, d.decision.Priority, time.Now(), safe); err != nil {
@@ -235,14 +304,8 @@ func (d *controlledDispatch) MarkSent() error {
 	r.mu.Lock()
 	r.decisionPending = false
 	r.currentAttemptID = d.ticket.TicketID
-	fallback := r.fallback
 	r.mu.Unlock()
 	if p.Enabled {
-		if safe && fallback {
-			if allowed, e := d.service.Runtime.CanRetry(d.ctx, p); e == nil && allowed {
-				d.viableFallback = true
-			}
-		}
 		d.startFirstOutputTimerLocked()
 	}
 	return nil
@@ -331,9 +394,17 @@ func (d *controlledDispatch) ObserveFrame(frame []byte) {
 	if d == nil {
 		return
 	}
+	if !gjson.ValidBytes(frame) && !bytes.Equal(bytes.TrimSpace(frame), []byte("[DONE]")) {
+		return // partial JSON cannot prove remote completion or provider failure
+	}
 	semantic, answer, terminal, tool := classifySemanticEvent(frame)
 	v := gjson.ParseBytes(frame)
 	kind := v.Get("type").String()
+	status := v.Get("response.status").String()
+	failure := kind == "error" || kind == "response.failed" || status == "failed" ||
+		v.Get("error").IsObject() || v.Get("response.error").IsObject()
+	incomplete := kind == "response.incomplete" || kind == "response.cancelled" || kind == "response.canceled" ||
+		status == "incomplete" || status == "cancelled" || status == "canceled"
 	d.mu.Lock()
 	if tool {
 		d.toolPending = true
@@ -349,20 +420,24 @@ func (d *controlledDispatch) ObserveFrame(frame []byte) {
 		}
 		terminal = false
 	}
-	if kind == "error" || kind == "response.failed" || kind == "response.incomplete" || kind == "response.cancelled" {
+	if failure || incomplete {
 		terminal = true
-		code := v.Get("error.code").String()
-		if code == "" {
-			code = v.Get("response.error.code").String()
+		requestFailure := false
+		// Anthropic error frames commonly carry only error.type. Responses
+		// can nest the same classification; neither form is availability loss.
+		for _, path := range []string{"error.code", "error.type", "response.error.code", "response.error.type"} {
+			switch v.Get(path).String() {
+			case "invalid_request_error", "invalid_request", "context_length_exceeded", "content_policy_violation", "cyber_policy":
+				requestFailure = true
+			}
 		}
-		switch code {
-		case "invalid_request_error", "invalid_request", "context_length_exceeded", "content_policy_violation":
+		if requestFailure {
 			d.excluded = true
 			d.request.mu.Lock()
 			d.request.ReplaySafe = false
 			d.request.mu.Unlock()
-		default:
-			if kind == "response.incomplete" || kind == "response.cancelled" {
+		} else {
+			if incomplete {
 				d.excluded = true
 			} else {
 				d.upstreamFailure = true
@@ -436,7 +511,7 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 		defer cancel()
 		r := d.request
 		r.mu.Lock()
-		p, profile, reasoning, transport, bucket, ledger := r.Policy, r.Profile, r.Reasoning, r.Protocol, controlledBucket(r), r.Ledger
+		p, ledger := r.Policy, r.Ledger
 		overallSemantic := r.semanticAt
 		r.mu.Unlock()
 		excluded := explicitExcluded || d.adminCancelled.Load() || (r.clientContext != nil && r.clientContext.Err() != nil) || (errors.Is(err, context.Canceled) && !timeout) || (timeout && clipped)
@@ -453,46 +528,89 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			outcome = "client_cancelled"
 		}
 		if !sent {
-			d.service.releaseDecision(d.decision)
+			d.service.releaseDecisionContext(ctx, d.decision)
 			if d.budget.ID != "" {
 				_ = d.service.Runtime.RefundDispatchBudget(ctx, d.budget)
 			}
 			remoteTerminal = true
 			outcome = "not_sent"
 		}
-		knownTerminal := remoteTerminal || terminal
-		completed := sent && knownTerminal && !upstreamFailure && !excluded && err == nil && !timeout
+		// A final HTTP error status is a known rejection even if its diagnostic
+		// body stalls or is truncated. Waiting for diagnostic EOF must not leave
+		// a rejected request holding UNKNOWN execution capacity indefinitely.
+		knownTerminal := remoteTerminal || terminal || (sent && status >= http.StatusBadRequest)
+		completed := sent && knownTerminal && status < 400 && outcome != "response_unvalidated" && !upstreamFailure && !excluded && err == nil && !timeout
 		if upstreamFailure && outcome == "completed" {
 			outcome = "upstream_error"
 		}
+
+		fd := d.classifyFailureDomains(outcome, err)
 		if knownTerminal {
 			certainty := "remote_terminal"
 			if !sent || outcome == "not_sent" {
 				certainty = "proven_not_sent"
 			}
-			if e := d.service.Store.RecordTerminalIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400); e != nil {
-				slog.Warn("scheduling terminal intent pending", "attempt_id", d.ticket.TicketID, "error", e)
+			var intentErr error
+			if d.ticket.Failure != nil {
+				intentErr = d.service.Store.RecordTerminalFailureIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400, fd, completed)
+			} else {
+				intentErr = d.service.Store.RecordTerminalIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400)
 			}
-			if e := d.service.Store.SettleAttempt(ctx, d.ticket.TicketID, outcome, sent && status < 400); e != nil {
+			if intentErr != nil {
+				excluded = true
+				slog.Warn("scheduling terminal and failure intent pending", "attempt_id", d.ticket.TicketID, "error", intentErr)
+				if e := d.service.Store.MarkAttemptUnknown(ctx, d.ticket.TicketID); e != nil {
+					slog.Warn("scheduling unknown persistence pending", "attempt_id", d.ticket.TicketID, "error", e)
+				}
+			} else if e := d.service.Store.SettleAttempt(ctx, d.ticket.TicketID, outcome, sent && status < 400); e != nil {
 				slog.Warn("scheduling settlement pending", "attempt_id", d.ticket.TicketID, "error", e)
 			}
 		} else {
+			if d.ticket.Failure != nil {
+				if e := d.service.Store.RecordFailureIntent(ctx, d.ticket.TicketID, fd, completed); e != nil {
+					slog.Warn("scheduling failure intent pending", "attempt_id", d.ticket.TicketID, "error", e)
+				}
+			}
 			if e := d.service.Store.MarkAttemptUnknown(ctx, d.ticket.TicketID); e != nil {
 				slog.Warn("scheduling unknown attempt persistence failed", "attempt_id", d.ticket.TicketID, "error", e)
 			}
+		}
+		if d.ticket.Failure != nil {
+			if e := d.service.Store.ApplyFailureFeedback(ctx, d.ticket.TicketID, fd, completed); e != nil {
+				slog.Warn("scheduling failure feedback pending", "attempt_id", d.ticket.TicketID, "error", e)
+			}
+		}
+
+		if knownTerminal {
+			if releaseErr := (scheduling.RedisFailureDomains{Client: d.service.redis}).Release(ctx, d.ticket); releaseErr != nil {
+				slog.Warn("scheduling domain lease release pending", "attempt_id", d.ticket.TicketID, "error", releaseErr)
+			}
+		}
+		if fd.Class == "authentication" || fd.Class == "rate_limit" || fd.Class == "model_capability" || fd.Class == "invalid_request" {
+			excluded = true
 		}
 		if sent && p.Enabled {
 			if e := d.service.Runtime.ForgetDispatchReceipts(ctx, d.decision, d.budget); e != nil {
 				slog.Warn("scheduling receipt cleanup pending", "attempt_id", d.ticket.TicketID, "error", e)
 			}
-			o := scheduling.Observation{AccountID: d.ticket.AccountID, Model: p.Model, Profile: profile, Reasoning: reasoning, Transport: transport, ContextBucket: bucket, At: time.Now(), HasSemanticOutput: !semantic.IsZero(), Completed: completed, FirstOutputTimeout: timeout && !clipped, AttributableFailure: !excluded && (upstreamFailure || (err != nil && !timeout)), Excluded: excluded, RetryAfter: retryAfter}
+			o := d.healthObservation
+			o.AttemptID = d.ticket.TicketID
+			o.At = time.Now()
+			o.HasSemanticOutput = !semantic.IsZero()
+			o.Completed = completed
+			o.FirstOutputTimeout = timeout && !clipped
+			o.AttributableFailure = !excluded && (upstreamFailure || (err != nil && !timeout))
+			o.Excluded = excluded
+			o.RetryAfter = retryAfter
 			if !semantic.IsZero() {
 				o.TTFT = semantic.Sub(started)
 			} else if timeout {
 				o.TTFT = time.Since(started)
 			}
-			if e := d.service.Runtime.Observe(ctx, o); e != nil {
+			if current, e := d.service.Store.WithCurrentFailureIdentity(ctx, d.ticket.Failure, func() error { return d.service.Runtime.Observe(ctx, o) }); e != nil {
 				slog.Warn("scheduling health observation pending", "attempt_id", d.ticket.TicketID, "error", e)
+			} else if !current {
+				slog.Info("scheduling stale terminal observation ignored", "attempt_id", d.ticket.TicketID)
 			}
 			if knownTerminal {
 				_ = d.service.Runtime.ReleaseProbe(ctx, d.decision.ProbeToken)
@@ -539,12 +657,8 @@ func (d *controlledDispatch) observeRateLimit(value string) {
 	d.mu.Lock()
 	d.retryAfter = until
 	d.mu.Unlock()
-	d.request.mu.Lock()
-	ledger := d.request.Ledger
-	d.request.mu.Unlock()
-	if ledger != nil {
-		ledger.BlockFailureDomain(fmt.Sprint(d.ticket.FamilyID))
-	}
+	// Retry-After is timing evidence only. Shared exclusion belongs to the
+	// structured, explicitly declared scope in classifyFailureDomains.
 }
 
 type controlledHTTPUpstream struct {
@@ -567,6 +681,10 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 	if req.Context().Value(controlledDispatchContextKey{}) != nil {
 		return send(req)
 	}
+	req, err := s.prepareControlledFailureRequest(req, accountID)
+	if err != nil {
+		return nil, err
+	}
 	d, err := s.beginDispatch(req.Context(), accountID, concurrency)
 	if err != nil {
 		return nil, err
@@ -574,20 +692,21 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 	if d == nil {
 		return send(req)
 	}
+	buffered, _ := req.Context().Value(controlledBufferedResponseContextKey{}).(bool)
 	// Read a duplicate body only when the transport supplied a safe GetBody.
 	// Unknown/multipart input has no observable TTFT until an SSE header proves it.
-	d.semanticObservable = (strings.Contains(req.URL.Path, "streamGenerateContent") || strings.HasSuffix(req.URL.Path, "/invoke-with-response-stream"))
-	if req.GetBody != nil {
+	d.semanticObservable = !buffered && (strings.Contains(req.URL.Path, "streamGenerateContent") || strings.HasSuffix(req.URL.Path, "/invoke-with-response-stream"))
+	if !buffered && req.GetBody != nil {
 		if duplicate, e := req.GetBody(); e == nil {
-			raw, _ := io.ReadAll(io.LimitReader(duplicate, 256*1024))
+			_, stream, valid := ReadControlledOutboundMetadata(duplicate)
 			_ = duplicate.Close()
-			if gjson.ValidBytes(raw) {
-				d.semanticObservable = d.semanticObservable || gjson.GetBytes(raw, "stream").Bool()
+			if valid {
+				d.semanticObservable = d.semanticObservable || stream
 			}
 		}
 	}
 	if err = d.MarkSent(); err != nil {
-		d.Finish("not_sent", true, err)
+		d.finishPreparationFailure(err)
 		return nil, err
 	}
 	response, err := send(req.WithContext(d.Context()))
@@ -610,43 +729,40 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 		d.Finish("empty_response", true, io.ErrUnexpectedEOF)
 		return response, io.ErrUnexpectedEOF
 	}
+	// Cancellation must close error bodies too, including while the bounded
+	// evidence prefix is being read below. Capture the original body, not the
+	// response field which the evidence and protocol wrappers replace.
+	upstreamBody := response.Body
+	go func() {
+		select {
+		case <-d.done:
+		case <-d.ctx.Done():
+			_ = upstreamBody.Close()
+		}
+	}()
 	d.mu.Lock()
 	d.status = response.StatusCode
 	d.upstreamFailure = response.StatusCode == 429 || response.StatusCode >= 500
 	d.excluded = response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != 401 && response.StatusCode != 403 && response.StatusCode != 429
+	if response.StatusCode >= 400 {
+		d.startErrorBodyTimerLocked()
+	}
 	d.mu.Unlock()
 	if response.StatusCode == 429 {
 		d.observeRateLimit(response.Header.Get("Retry-After"))
 	}
-	if response.StatusCode == 400 || response.StatusCode == 413 || response.StatusCode == 422 {
-		d.request.mu.Lock()
-		d.request.ReplaySafe = false
-		d.request.mu.Unlock()
-	}
+	d.observeFailureResponse(response)
 	d.noteEvent(false, false, false)
 	d.mu.Lock()
-	d.semanticObservable = (strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") || strings.Contains(response.Header.Get("Content-Type"), "application/vnd.amazon.eventstream")) && response.StatusCode < 400
-	if response.StatusCode >= 400 {
-		if d.timer != nil {
-			d.timer.Stop()
-		}
-	} else {
+	d.semanticObservable = !buffered && (strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") || strings.Contains(response.Header.Get("Content-Type"), "application/vnd.amazon.eventstream")) && response.StatusCode < 400
+	if response.StatusCode < 400 {
 		d.startFirstOutputTimerLocked()
 	}
 	d.mu.Unlock()
 	d.parser.onFrame = d.ObserveFrame
-	body := &controlledResponseBody{ReadCloser: response.Body, dispatch: d, sse: strings.Contains(response.Header.Get("Content-Type"), "text/event-stream"), success: response.StatusCode < 400, decoded: strings.Contains(response.Header.Get("Content-Type"), "application/vnd.amazon.eventstream")}
+	body := &controlledResponseBody{ReadCloser: response.Body, dispatch: d, buffered: buffered, sse: strings.Contains(response.Header.Get("Content-Type"), "text/event-stream"), success: response.StatusCode < 400, decoded: strings.Contains(response.Header.Get("Content-Type"), "application/vnd.amazon.eventstream")}
 	response.Body = body
-	// Close blocked body reads on first-output timeout or explicit forced stop.
-	go func() {
-		select {
-		case <-d.done:
-			return
-		case <-d.ctx.Done():
-			_ = body.ReadCloser.Close()
-		}
-	}()
-	if body.sse && body.success && ControlledSchedulingEnabled(req.Context()) {
+	if body.sse && !body.buffered && body.success && ControlledSchedulingEnabled(req.Context()) {
 		var prefix bytes.Buffer
 		buf := make([]byte, 16*1024)
 		for {
@@ -659,7 +775,14 @@ func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int
 			timedOut := d.timeout
 			d.mu.Unlock()
 			if ready {
-				response.Body = &prefixedControlledBody{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), body), closer: body}
+				var tail io.Reader = body
+				if e != nil {
+					// Prefetch may receive content and its terminal error together.
+					// Preserve that error after the prefix instead of reading a body
+					// already closed by Finish and losing the original certainty.
+					tail = controlledReadError{err: e}
+				}
+				response.Body = &prefixedControlledBody{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), tail), closer: body}
 				return response, nil
 			}
 			if prefix.Len() > openAIFirstOutputStageMaxBytes {
@@ -685,27 +808,46 @@ type prefixedControlledBody struct {
 	closer io.Closer
 }
 
+type controlledReadError struct{ err error }
+
+func (r controlledReadError) Read([]byte) (int, error) { return 0, r.err }
+
 func (b *prefixedControlledBody) Close() error { return b.closer.Close() }
 
 type controlledResponseBody struct {
 	io.ReadCloser
-	dispatch     *controlledDispatch
-	sse, success bool
-	decoded      bool
+	dispatch               *controlledDispatch
+	sse, success           bool
+	buffered               bool
+	decoded                bool
+	nonstreamValidated     bool
+	nonstreamValidationErr error
 }
 
 func (b *controlledResponseBody) Read(p []byte) (int, error) {
 	n, e := b.ReadCloser.Read(p)
+	e = b.dispatch.responseReadError(e)
 	if b.decoded {
 		return n, e
 	}
-	if n > 0 && b.success && b.sse {
+	if n > 0 && b.success && b.sse && !b.buffered {
 		b.dispatch.parser.Feed(p[:n], nil)
 	}
-	if e == io.EOF && b.success && b.sse {
+	if e == io.EOF && b.success && b.sse && !b.buffered {
 		b.dispatch.parser.Feed([]byte("\n\n"), nil)
 	}
 	if e != nil {
+		if e == io.EOF && b.success && (!b.sse || b.buffered) {
+			// EOF proves remote completion, not a valid application response.
+			// The adapter confirms its parsed result before health/recovery credit.
+			b.dispatch.mu.Lock()
+			b.dispatch.transportTerminal = true
+			if b.dispatch.timer != nil {
+				b.dispatch.timer.Stop()
+			}
+			b.dispatch.mu.Unlock()
+			return n, e
+		}
 		outcome := "completed"
 		remoteTerminal := e == io.EOF
 		observedErr := eIfNotEOF(e)
@@ -740,12 +882,21 @@ func (b *controlledResponseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.dispatch.mu.Lock()
 	terminal := b.dispatch.terminal
+	transportTerminal := b.dispatch.transportTerminal
+	validationErr := b.nonstreamValidationErr
 	b.dispatch.mu.Unlock()
 	outcome := "body_closed"
 	if terminal && b.success {
 		outcome = "completed"
 	}
 	observedErr := err
+	if transportTerminal && (!b.sse || b.buffered) && !b.decoded {
+		outcome = "response_unvalidated"
+		terminal = true
+		if validationErr != nil {
+			outcome, observedErr = "invalid_response", validationErr
+		}
+	}
 	if !terminal && b.success && observedErr == nil {
 		observedErr = context.Canceled
 	}

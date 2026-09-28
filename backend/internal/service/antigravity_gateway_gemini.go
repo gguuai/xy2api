@@ -158,6 +158,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
 	// 如果客户端请求非流式，在响应处理阶段会收集完整流式响应后返回
 	upstreamAction := "streamGenerateContent"
+	if !stream {
+		ctx = withControlledBufferedResponse(ctx)
+	}
 
 	// 执行带重试的请求
 	result, err := s.antigravityRetryLoop(antigravityRetryLoopParams{

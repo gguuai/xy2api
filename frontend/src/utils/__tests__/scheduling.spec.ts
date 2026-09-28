@@ -69,3 +69,13 @@ describe('controlled scheduling form policy', () => {
     expect(isSchedulingConflict(null)).toBe(false)
   })
 })
+
+it('rejects equal-specificity overlaps but permits adjacent and more-specific profiles', () => {
+  const policy = createSchedulingPolicy(0, 'm')
+  policy.profiles = [{ ...createLatencyProfile(), name: 'a', transport: 'anthropic', context_max_tokens: 8192 }, { ...createLatencyProfile(), name: 'b', transport: 'messages', context_min_tokens: 8191 }]
+  expect(validateSchedulingPolicy(policy)).toBe('ambiguousProfiles')
+  policy.profiles[1].context_min_tokens = 8192
+  expect(validateSchedulingPolicy(policy)).toBeNull()
+  policy.profiles.push({ ...createLatencyProfile(), name: 'base' })
+  expect(validateSchedulingPolicy(policy)).toBeNull()
+})

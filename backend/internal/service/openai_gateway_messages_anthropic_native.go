@@ -232,7 +232,8 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	upstreamModel string,
 	reasoningEffort *string,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
@@ -241,6 +242,10 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateControlledNonstreamResponse(resp, body, "messages"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

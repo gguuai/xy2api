@@ -82,11 +82,14 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 			state = scheduling.ControlPaused
 		}
 		expectExplainControl(m, a.ID, scheduling.ScopeFamily, state)
+		if state == scheduling.ControlRunning {
+			expectExplainFailureDomains(m, a.ID, false)
+		}
 	}
 	h := scheduling.HealthSnapshot{State: scheduling.HealthRecovering, RecoveryStage: 1, GoodStreak: 4, UpdatedAtMS: time.Now().UnixMilli()}
 	raw, e := json.Marshal(h)
 	require.NoError(t, e)
-	require.NoError(t, client.Set(ctx, scheduling.HealthRedisKey(2, "m", inherited, "default", "unknown", "ws"), raw, 0).Err())
+	require.NoError(t, client.HSet(ctx, scheduling.HealthRedisKey(2, "m", inherited, "default", "unknown", "ws", scheduling.StableHealthIdentity("", "", nil, nil)), "snapshot", raw).Err())
 	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{accounts: accounts}, concurrency: NewConcurrencyService(explainLoads{counts: map[int64]int{2: 1}})}
 	svc.SetExplainEligibility(allowExplain, nil)
 	before := mr.Dump()
@@ -185,4 +188,47 @@ type explainNoSettingsReads struct{ SettingRepository }
 
 func (explainNoSettingsReads) GetValue(context.Context, string) (string, error) {
 	panic("Explain started quota settings refresh")
+}
+
+func expectExplainFailureDomains(m sqlmock.Sqlmock, id int64, blocked bool) {
+	m.ExpectQuery("SELECT c.id,c.credentials").WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"credential_owner_id", "credentials", "extra", "platform", "type", "version", "quota_pool_id", "availability_pool_id"}).AddRow(id, []byte("{}"), []byte("{}"), "", "", 0, "", ""))
+	rows := sqlmock.NewRows([]string{"gate_key", "scope", "reason", "version", "blocked", "ready_after", "probe_active"})
+	if blocked {
+		rows.AddRow("local-gate", "logical_account", "credential_auth", 1, true, nil, false)
+	}
+	m.ExpectQuery("SELECT gate_key,scope,reason,version").WillReturnRows(rows)
+}
+func TestExplainFailureDomainGateMatchesLiveEligibility(t *testing.T) {
+	db, m, e := sqlmock.New()
+	require.NoError(t, e)
+	defer func() { _ = db.Close() }()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { require.NoError(t, client.Close()) }()
+	p := scheduling.Policy{Model: "m", Enabled: true, Profiles: []scheduling.LatencyProfile{{Name: "unknown-safe"}, {Name: "known", ContextMinTokens: 8192}}}
+	raw, e := json.Marshal(p)
+	require.NoError(t, e)
+	m.ExpectQuery("SELECT version, policy").WithArgs(int64(0), "m").WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(1, raw))
+	m.ExpectQuery("SELECT account_id,COUNT").WillReturnRows(sqlmock.NewRows([]string{"account_id", "count"}))
+	expectExplainControl(m, 1, scheduling.ScopeAccount, scheduling.ControlRunning)
+	expectExplainControl(m, 1, scheduling.ScopeFamily, scheduling.ControlRunning)
+	expectExplainFailureDomains(m, 1, true)
+	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{accounts: []Account{{ID: 1, Concurrency: 3}}}, concurrency: NewConcurrencyService(explainLoads{})}
+	svc.SetExplainEligibility(allowExplain, nil)
+	before := mr.Dump()
+	out, e := svc.Explain(context.Background(), json.RawMessage(`{"model":"m","protocol":"responses"}`))
+	require.NoError(t, e)
+	result, ok := out.(map[string]any)
+	require.True(t, ok)
+	rows, ok := result["candidates"].([]schedulingExplainRow)
+	require.True(t, ok)
+	require.False(t, rows[0].Eligible)
+	require.Equal(t, "failure_domain_gate", rows[0].Reason)
+	profile, ok := result["profile"].(scheduling.LatencyProfile)
+	require.True(t, ok)
+	require.Equal(t, "unknown-safe", profile.Name)
+	require.Equal(t, false, result["context_tokens_known"])
+	require.Equal(t, "default", result["reasoning_effort"])
+	require.Equal(t, before, mr.Dump())
+	require.NoError(t, m.ExpectationsWereMet())
 }

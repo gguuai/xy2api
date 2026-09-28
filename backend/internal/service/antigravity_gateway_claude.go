@@ -102,6 +102,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
 	// 如果客户端请求非流式，在响应处理阶段会收集完整流式响应后转换返回
 	action := "streamGenerateContent"
+	if !claudeReq.Stream {
+		ctx = withControlledBufferedResponse(ctx)
+	}
 
 	// 执行带重试的请求
 	result, err := s.antigravityRetryLoop(antigravityRetryLoopParams{

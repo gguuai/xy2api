@@ -42,8 +42,13 @@ func TestExplainRealPostgresRedisIsPureAndPredictsNextSelection(t *testing.T) {
 	group := &Group{ID: 7, Platform: PlatformOpenAI}
 	for _, a := range accounts {
 		a.Platform = PlatformOpenAI
-		a.Type = AccountTypeAPIKey
+		a.Type = AccountTypeOAuth
+		// The synthetic fixture model is an explicit alias; OAuth defaults only
+		// support real provider models, unlike unrestricted API-key fixtures.
+		a.Credentials = map[string]any{"model_mapping": map[string]any{"test-model": "test-model"}}
 	}
+	_, fixtureErr := db.Exec(`UPDATE accounts SET credentials='{"model_mapping":{"test-model":"test-model"}}'::jsonb`)
+	require.NoError(t, fixtureErr)
 	gateway := &OpenAIGatewayService{accountRepo: s.accounts, schedulerSnapshot: &SchedulerSnapshotService{groupRepo: explainGroups{group: group}}}
 	s.SetExplainEligibility(gateway.ExplainSchedulingEligibility, nil)
 	s.concurrency = NewConcurrencyService(explainLoads{counts: map[int64]int{1: 2}})

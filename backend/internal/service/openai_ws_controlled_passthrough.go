@@ -179,7 +179,11 @@ func (c *openAIWSControlledPassthroughFrameConn) finishTurn(outcome string, term
 	}
 	c.mu.Unlock()
 	if d != nil {
-		d.Finish(outcome, terminal, err)
+		if real, ok := d.(*controlledDispatch); outcome == "not_sent" && ok {
+			real.finishPreparationFailure(err)
+		} else {
+			d.Finish(outcome, terminal, err)
+		}
 	}
 	if settleUsage != nil {
 		settleUsage(requestCtx)

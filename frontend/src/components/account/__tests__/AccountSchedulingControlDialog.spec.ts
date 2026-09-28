@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/schedulingDomains', () => ({ getFailureDomains: vi.fn(), putFailureDomains: vi.fn(), permitFailureRecovery: vi.fn(), getUnknownAttempt: vi.fn(), resolveUnknownAttempt: vi.fn() }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 const { getControl, setControl } = vi.hoisted(() => ({ getControl: vi.fn(), setControl: vi.fn() }))

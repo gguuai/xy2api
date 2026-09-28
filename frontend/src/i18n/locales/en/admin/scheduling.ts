@@ -11,7 +11,13 @@ export default {
     "statsEmpty": "No actual dispatches have been recorded for this scope.",
     "statsTargetHint": "Targets come from the latest read-only preview above; without a preview they remain unobserved. Current targets and the reporting window may have different policy versions or health states, so differences alone do not establish an error. A zero denominator produces an unobserved share.",
     "statsFailed": "Unable to read actual traffic",
-    "dispatchKinds": { "retry": "Retry", "probe": "Probe / recovery", "pin": "Pinned", "owner": "Owner bound", "fallback": "Fallback" },
+    "dispatchKinds": {
+      "retry": "Retry",
+      "probe": "Probe / recovery",
+      "pin": "Pinned",
+      "owner": "Owner bound",
+      "fallback": "Fallback"
+    },
     "traceTitle": "Actual request attempts",
     "traceHint": "Use request_id from scheduling_attempt logs to read registered PostgreSQL tickets and observed metrics. Queries never dispatch or retry a request. Missing observations are not shown as zero.",
     "requestID": "Request ID",
@@ -189,7 +195,16 @@ export default {
       "invalidLatency": "Require 0 < R < H < T ≤ D ≤ 1800 seconds and 0 < M ≤ T; all zeros mean observe only.",
       "invalidContext": "Context bounds must be nonnegative integers; a nonzero exclusive upper bound must exceed the minimum.",
       "invalidRetry": "Retry limits must be valid integers; per-tier and per-account caps cannot exceed the total.",
-      "invalidQueue": "Set a queue deadline above zero and at most 60 seconds when overflow is disabled."
-    }
+      "invalidQueue": "Set a queue deadline above zero and at most 60 seconds when overflow is disabled.",
+      "ambiguousProfiles": "Equal-specificity profile selectors cannot overlap; adjacent context ranges may share a boundary."
+    },
+    "contextUnknownHint": "Production requests currently have no trusted context token count and remain unknown. Byte estimates are never used; context-bounded profiles do not match.",
+    "historicalProfileOverlap": "Historical profiles overlap at equal specificity. The original first match is retained; correct these profiles before saving:",
+    "restoreInheritance": "Restore group inheritance",
+    "restoredInheritance": "Group override removed and model defaults reloaded; the CAS version continues to increase.",
+    "resetProfileHealth": "Rebuild this profile health revision on save (current {revision}); authentication, quotas and unsettled tickets remain governed independently.",
+    "healthRevision": "Health revision",
+    "resolvedProfile": "Resolved profile",
+    "explainContextHint": "Leave blank to match current production unknown. A supplied count simulates exact context only; it is not an observed production value."
   }
 }

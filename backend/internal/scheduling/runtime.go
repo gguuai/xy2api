@@ -23,7 +23,14 @@ func NewRuntime(store *RedisStore) *Runtime { return &Runtime{store: store} }
 
 // Evaluate is pure. Preview reads shared health but neither reserves a slot nor
 // changes weighted-round-robin balances, probe leases, or retry credit.
-func Evaluate(req SelectionRequest, snapshots map[int64]HealthSnapshot) ([]Decision, error) {
+func Evaluate(req SelectionRequest, snapshots map[int64]HealthSnapshot) (result []Decision, resultErr error) {
+	defer func() {
+		for i := range result {
+			if result[i].HealthFence != nil {
+				result[i].HealthFence.HealthRevision = req.Profile.HealthRevision
+			}
+		}
+	}()
 	p := NormalizePolicy(req.Policy)
 	now := req.Now
 	if now.IsZero() {
@@ -422,7 +429,11 @@ func decisions(p Policy, cs []weightedCandidate) []Decision {
 		if c.effective <= 0 {
 			continue
 		}
-		out = append(out, Decision{AccountID: c.candidate.AccountID, Priority: c.candidate.Priority, PolicyVersion: p.Version, Reason: c.reason, HealthState: c.health.State, TargetShare: c.target, EffectiveShare: c.effective, Probe: probeHealth(c.health.State)})
+		model := c.candidate.HealthModel
+		if model == "" {
+			model = p.Model
+		}
+		out = append(out, Decision{HealthFence: &HealthFence{Model: model, Generation: c.health.Generation, StageRevision: c.health.StageRevision, HealthIdentity: c.candidate.HealthIdentity, State: c.health.State}, AccountID: c.candidate.AccountID, Priority: c.candidate.Priority, PolicyVersion: p.Version, Reason: c.reason, HealthState: c.health.State, TargetShare: c.target, EffectiveShare: c.effective, Probe: probeHealth(c.health.State)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AccountID < out[j].AccountID })
 	return out

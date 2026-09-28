@@ -3,10 +3,7 @@ package scheduling
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"time"
 )
@@ -28,58 +25,6 @@ func (s *PostgresStore) ready() error {
 		return ErrSharedState
 	}
 	return nil
-}
-func (s *PostgresStore) GetPolicy(ctx context.Context, groupID int64, model string) (PolicyRecord, error) {
-	r := PolicyRecord{GroupID: groupID, Model: model}
-	if err := s.ready(); err != nil {
-		return r, err
-	}
-	var raw []byte
-	err := s.db.QueryRowContext(ctx, "SELECT version, policy FROM scheduling_policies WHERE group_id=$1 AND model=$2", groupID, model).Scan(&r.Version, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, nil
-	}
-	if err != nil {
-		return r, err
-	}
-	var p Policy
-	if err = json.Unmarshal(raw, &p); err != nil {
-		return r, fmt.Errorf("decode scheduling policy: %w", err)
-	}
-	p.Version = r.Version
-	r.Policy = &p
-	return r, nil
-}
-func (s *PostgresStore) PutPolicy(ctx context.Context, p Policy, expected int64) (PolicyRecord, error) {
-	r := PolicyRecord{GroupID: p.GroupID, Model: p.Model}
-	if err := s.ready(); err != nil {
-		return r, err
-	}
-	if expected < 0 || strings.TrimSpace(p.Model) == "" || p.GroupID < 0 {
-		return r, ErrInvalidControl
-	}
-	if err := ValidatePolicy(p); err != nil {
-		return r, err
-	}
-	p.Version = expected + 1
-	raw, err := json.Marshal(p)
-	if err != nil {
-		return r, err
-	}
-	if expected == 0 {
-		err = s.db.QueryRowContext(ctx, "INSERT INTO scheduling_policies(group_id,model,version,policy) VALUES($1,$2,1,$3::jsonb) ON CONFLICT(group_id,model) DO NOTHING RETURNING version", p.GroupID, p.Model, string(raw)).Scan(&r.Version)
-	} else {
-		err = s.db.QueryRowContext(ctx, "UPDATE scheduling_policies SET version=version+1, policy=$3::jsonb, updated_at=NOW() WHERE group_id=$1 AND model=$2 AND version=$4 RETURNING version", p.GroupID, p.Model, string(raw), expected).Scan(&r.Version)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, ErrVersionConflict
-	}
-	if err != nil {
-		return r, err
-	}
-	p.Version = r.Version
-	r.Policy = &p
-	return r, nil
 }
 
 type sqlQueryer interface {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSchedulingPolicy } from '@/utils/scheduling'
-const { get, put, post } = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn() }))
-vi.mock('@/api/client', () => ({ apiClient: { get, put, post } }))
+const { get, put, post, remove } = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), remove: vi.fn() }))
+vi.mock('@/api/client', () => ({ apiClient: { get, put, post, delete: remove } }))
 import scheduling from '@/api/admin/scheduling'
 
 beforeEach(() => { vi.resetAllMocks() })
@@ -49,4 +49,17 @@ describe('admin scheduling API contracts', () => {
     expect(post).not.toHaveBeenCalled()
     expect(put).not.toHaveBeenCalled()
   })
+})
+
+it('restores inheritance with the current CAS version and propagates a conflict once', async () => {
+  remove.mockRejectedValue({ status: 409 })
+  await expect(scheduling.restoreInheritance(2, 'custom', 8)).rejects.toEqual({ status: 409 })
+  expect(remove).toHaveBeenCalledTimes(1)
+  expect(remove).toHaveBeenCalledWith('/admin/scheduling/policies', { data: { group_id: 2, model: 'custom', expected_version: 8 } })
+})
+it('sends explicit profile resets through the existing policy CAS mutation', async () => {
+  put.mockResolvedValue({ data: { version: 9 } })
+  const policy = createSchedulingPolicy(2, 'custom')
+  await scheduling.savePolicy(policy, 8, ['high'])
+  expect(put).toHaveBeenCalledWith('/admin/scheduling/policies', { group_id: 2, model: 'custom', expected_version: 8, policy, reset_health_profiles: ['high'] })
 })

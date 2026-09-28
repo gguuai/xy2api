@@ -61,6 +61,9 @@ func (s *ControlledSchedulingService) Start() {
 			if _, e := s.Store.ReconcileTerminalIntents(c); e != nil && ctx.Err() == nil {
 				slog.Warn("scheduling terminal reconciliation unavailable", "error", e)
 			}
+			if _, e := s.Store.ReconcileFailureIntents(c); e != nil && ctx.Err() == nil {
+				slog.Warn("scheduling failure feedback reconciliation unavailable", "error", e)
+			}
 			if _, e := s.Store.ReconcileExpired(c); e != nil && ctx.Err() == nil {
 				slog.Warn("scheduling reconciliation unavailable", "error", e)
 			}
@@ -192,7 +195,7 @@ func controlledBucket(r *ControlledRequest) string {
 	}
 	return scheduling.ContextBucket(r.ContextTokens)
 }
-func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *ControlledRequest, accounts []*Account, eligible func(*Account) (bool, string), excluded map[int64]struct{}, acquire bool) (*AccountSelectionResult, error) {
+func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *ControlledRequest, accounts []*Account, eligible func(*Account) (bool, string), excluded map[int64]struct{}, acquire bool) (selected *AccountSelectionResult, selectErr error) {
 	r.mu.Lock()
 	old := r.Decision
 	pending := r.decisionPending
@@ -207,13 +210,17 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 	ownerID := r.ownerAccountID
 	sessionID := r.SessionID
 	r.mu.Unlock()
+	parent := ctx
+	ctx, stopPreparation := controlledPreparationContext(ctx, r)
+	defer stopPreparation()
+	defer func() { selectErr = controlledPreparationError(parent, ctx, selectErr) }()
 	if ownerID > 0 {
 		p.Mode = scheduling.ModePin
 		p.PinAccountID = ownerID
 		p.PinFallback = false
 	}
 	if pending {
-		s.releaseDecision(old)
+		s.releaseDecisionContext(ctx, old)
 	}
 	if ledger == nil {
 		return nil, fmt.Errorf("%w: missing request ledger", scheduling.ErrSharedState)
@@ -306,6 +313,11 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		if ledger.CanAttempt(a.ID, priority, time.Now(), safe) != nil {
 			ok = false
 		}
+		failureEligible, failureDomains, e := s.controlledFailureCandidate(ctx, a, p.Model)
+		if e != nil {
+			return nil, e
+		}
+		ok = ok && failureEligible
 		used := active[a.ID]
 		if loadMap[a.ID] != nil && loadMap[a.ID].CurrentConcurrency > used {
 			used = loadMap[a.ID].CurrentConcurrency
@@ -314,7 +326,11 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		if a.ParentAccountID != nil {
 			family = *a.ParentAccountID
 		}
-		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: ok, CapacityAvailable: a.Concurrency <= 0 || used < a.Concurrency, FailureDomain: fmt.Sprint(family), FailureDomains: controlledAccountFailureDomains(a, p.Model)})
+		healthIdentity, healthErr := s.controlledHealthIdentity(ctx, a)
+		if healthErr != nil {
+			return nil, healthErr
+		}
+		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: ok, CapacityAvailable: a.Concurrency <= 0 || used < a.Concurrency, FailureDomain: fmt.Sprint(family), FailureDomains: failureDomains, HealthIdentity: healthIdentity, HealthModel: a.GetMappedModel(p.Model)})
 	}
 	queueUntil := time.Now().Add(time.Duration(p.QueueWaitMS) * time.Millisecond)
 	if !snapshot.Deadline.IsZero() && snapshot.Deadline.Before(queueUntil) {
@@ -381,16 +397,16 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		a := byID[d.AccountID]
 		fresh, e := s.accounts.GetByID(ctx, a.ID)
 		if e != nil {
-			s.releaseDecision(d)
+			s.releaseDecisionContext(ctx, d)
 			return nil, e
 		}
 		if fresh == nil {
-			s.releaseDecision(d)
+			s.releaseDecisionContext(ctx, d)
 			return nil, scheduling.ErrNoCandidate
 		}
 		ok, _ := eligible(fresh)
 		if !ok {
-			s.releaseDecision(d)
+			s.releaseDecisionContext(ctx, d)
 			for i := range req.Candidates {
 				if req.Candidates[i].AccountID == a.ID {
 					req.Candidates[i].HardEligible = false
@@ -401,16 +417,16 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		var release func()
 		if acquire {
 			if s.concurrency == nil {
-				s.releaseDecision(d)
+				s.releaseDecisionContext(ctx, d)
 				return nil, scheduling.ErrSharedState
 			}
 			slot, e := s.concurrency.AcquireAccountSlot(ctx, a.ID, fresh.Concurrency)
 			if e != nil {
-				s.releaseDecision(d)
+				s.releaseDecisionContext(ctx, d)
 				return nil, e
 			}
 			if slot == nil || !slot.Acquired {
-				s.releaseDecision(d)
+				s.releaseDecisionContext(ctx, d)
 				for i := range req.Candidates {
 					if req.Candidates[i].AccountID == a.ID {
 						req.Candidates[i].CapacityAvailable = false

@@ -1,7 +1,7 @@
 /** Duration wire fields are milliseconds unless explicitly named otherwise. */
 export interface AccountSchedulingRule { account_id: number; priority?: number | null; traffic_weight: number; fill_order: number }
 export interface ModelLatencyProfile {
-  name: string; reasoning?: string; transport?: string; context_min_tokens?: number; context_max_tokens?: number
+  name: string; health_revision?: number; reasoning?: string; transport?: string; context_min_tokens?: number; context_max_tokens?: number
   health_threshold_ms: number; recovery_threshold_ms: number; attempt_timeout_ms: number
   total_budget_ms: number; min_attempt_window_ms: number
 }
@@ -17,7 +17,8 @@ export interface SchedulingPolicy {
   all_degraded: 'bounded_best_effort' | 'strict_priority' | 'fail_fast'
   pin_account_id?: number; pin_fallback: boolean
 }
-export interface SchedulingPolicyDocument { policy: SchedulingPolicy | null; version: number; group_id: number; model: string }
+export interface SchedulingProfileDiagnostic { code: string; profiles: string[] }
+export interface SchedulingPolicyDocument { diagnostics?: SchedulingProfileDiagnostic[]; policy: SchedulingPolicy | null; version: number; group_id: number; model: string }
 export type SchedulingControlScope = 'logical_account' | 'credential_family'
 export type SchedulingControlState = 'RUNNING' | 'DRAINING' | 'PAUSED' | 'DRAIN_UNCERTAIN'
 export interface AccountSchedulingControl {
@@ -40,6 +41,8 @@ export interface SchedulingExplainCandidate {
   family_control_state?: string; current_concurrency?: number; concurrency_limit?: number
 }
 export interface SchedulingExplanation {
+  profile?: ModelLatencyProfile; profile_source?: string; context_bucket?: string; context_tokens_known?: boolean
+  context_source?: string; reasoning_effort?: string; profile_diagnostics?: SchedulingProfileDiagnostic[]
   policy_version: number; mode: string; selected_account_id?: number; reason: string
   candidates: SchedulingExplainCandidate[]; readonly: true; snapshot_at?: string
 }

@@ -11,7 +11,13 @@ export default {
     "statsEmpty": "该范围尚无已记录的实际派发。",
     "statsTargetHint": "目标份额来自上方最近一次只读预览；未预览时显示未观测。当前目标与统计窗口可能使用不同策略版本或健康状态，不能直接据差值认定调度错误。分母为 0 时实际份额显示未观测。",
     "statsFailed": "读取实际分流失败",
-    "dispatchKinds": { "retry": "重试", "probe": "探测 / 恢复", "pin": "指定账号", "owner": "强绑定", "fallback": "兜底" },
+    "dispatchKinds": {
+      "retry": "重试",
+      "probe": "探测 / 恢复",
+      "pin": "指定账号",
+      "owner": "强绑定",
+      "fallback": "兜底"
+    },
     "traceTitle": "实际请求尝试链",
     "traceHint": "使用 scheduling_attempt 日志中的 request_id 查询 PostgreSQL 已登记票据及观测指标。仅手动读取，不发起请求或自动重试；缺失观测不会填成 0。",
     "requestID": "请求 ID",
@@ -189,7 +195,16 @@ export default {
       "invalidLatency": "请满足 0 < R < H < T ≤ D ≤ 1800 秒且 0 < M ≤ T；全部为 0 表示仅观测。",
       "invalidContext": "上下文范围必须为非负整数；非零上限必须大于下限（不包含上限）。",
       "invalidRetry": "重试参数必须为有效整数，单层或单账号上限不能超过总上限。",
-      "invalidQueue": "禁止溢出时必须设置大于 0、最多 60 秒的排队期限。"
-    }
+      "invalidQueue": "禁止溢出时必须设置大于 0、最多 60 秒的排队期限。",
+      "ambiguousProfiles": "同特异性的档位条件不可重叠；相邻上下文区间可共用边界。"
+    },
+    "contextUnknownHint": "当前生产请求没有可信的上下文 token 计数，保持 unknown；不按字节估算，限定上下文范围的档位不会命中。",
+    "historicalProfileOverlap": "历史档位存在同特异性重叠；当前按原顺序取首个，请修正后再保存：",
+    "restoreInheritance": "恢复组继承",
+    "restoredInheritance": "已移除组覆盖并重新读取模型默认策略；CAS 版本继续递增。",
+    "resetProfileHealth": "保存时重建此档位健康修订（当前 {revision}）；不清认证、配额或未结算票据。",
+    "healthRevision": "健康修订",
+    "resolvedProfile": "实际解析档位",
+    "explainContextHint": "留空与当前生产 unknown 一致；手填 token 只模拟该精确上下文，不代表线上已观测。"
   }
 }

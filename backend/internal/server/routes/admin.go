@@ -59,11 +59,17 @@ func RegisterAdminRoutes(
 		if h.Admin.Scheduling != nil {
 			admin.GET("/scheduling/policies", h.Admin.Scheduling.GetPolicy)
 			admin.PUT("/scheduling/policies", h.Admin.Scheduling.PutPolicy)
+			admin.DELETE("/scheduling/policies", h.Admin.Scheduling.RestoreInheritance)
 			admin.POST("/scheduling/explain", h.Admin.Scheduling.Explain)
 			admin.GET("/scheduling/requests/:request_id/attempts", h.Admin.Scheduling.ListRequestAttempts)
 			admin.GET("/scheduling/stats", h.Admin.Scheduling.GetStatistics)
 			admin.GET("/accounts/:id/scheduling-control", h.Admin.Scheduling.GetControl)
 			admin.POST("/accounts/:id/scheduling-control", h.Admin.Scheduling.Control)
+			admin.GET("/accounts/:id/failure-domains", h.Admin.Scheduling.GetFailureDomains)
+			admin.PUT("/accounts/:id/failure-domains", h.Admin.Scheduling.PutFailureDomains)
+			admin.POST("/accounts/:id/failure-domains/recovery", h.Admin.Scheduling.PermitFailureRecovery)
+			admin.GET("/scheduling/attempts/:ticket_id/resolution", h.Admin.Scheduling.GetUnknownAttempt)
+			admin.POST("/scheduling/attempts/:ticket_id/resolution", h.Admin.Scheduling.ResolveUnknownAttempt)
 		}
 
 		// 公告管理

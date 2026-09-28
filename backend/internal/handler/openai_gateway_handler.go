@@ -531,6 +531,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	service.SetOpenAIHTTPResponseOwner(c, subject.UserID, apiKey.ID)
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, reqModel, reqStream)
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
@@ -1208,6 +1209,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, reqModel, reqStream)
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 

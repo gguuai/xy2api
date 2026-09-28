@@ -28,10 +28,16 @@ func opaqueID() string {
 func digest(s string) string   { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:16]) }
 func scopeKey(p Policy) string { return fmt.Sprintf("%d:%s", p.GroupID, p.Model) }
 func profileKey(model string, p LatencyProfile, reasoning, bucket, transport string) string {
-	return digest(strings.Join([]string{"semantic_v2", model, p.Name, reasoning, bucket, transport, strconv.FormatInt(p.ContextMinTokens, 10), strconv.FormatInt(p.ContextMaxTokens, 10), strconv.FormatInt(p.HealthThresholdMS, 10), strconv.FormatInt(p.RecoveryThresholdMS, 10), strconv.FormatInt(p.AttemptTimeoutMS, 10)}, "|"))
+	raw, _ := json.Marshal([]string{"semantic_v4", strconv.FormatInt(p.HealthRevision, 10), model, p.Name, reasoning, bucket, transport, strconv.FormatInt(p.ContextMinTokens, 10), strconv.FormatInt(p.ContextMaxTokens, 10), strconv.FormatInt(p.HealthThresholdMS, 10), strconv.FormatInt(p.RecoveryThresholdMS, 10), strconv.FormatInt(p.AttemptTimeoutMS, 10)})
+	return digest(string(raw))
 }
-func HealthRedisKey(accountID int64, model string, p LatencyProfile, reasoning, bucket, transport string) string {
-	return fmt.Sprintf("xy2:scheduling:health:%d:%s", accountID, profileKey(model, p, reasoning, bucket, transport))
+func HealthRedisKey(accountID int64, model string, p LatencyProfile, reasoning, bucket, transport string, identity ...string) string {
+	scope := profileKey(model, p, reasoning, bucket, transport)
+	if len(identity) > 0 && identity[0] != "" {
+		raw, _ := json.Marshal([]string{scope, identity[0]})
+		scope = digest(string(raw))
+	}
+	return fmt.Sprintf("xy2:scheduling:health:{%d:%s}", accountID, scope)
 }
 func allocationKey(r SelectionRequest) string {
 	kind := NormalizePolicy(r.Policy).Mode + ":initial"
@@ -52,7 +58,11 @@ func (s *RedisStore) Snapshots(ctx context.Context, r SelectionRequest) (map[int
 	pipe := s.client.Pipeline()
 	commands := map[int64]*redis.StringCmd{}
 	for _, c := range r.Candidates {
-		commands[c.AccountID] = pipe.Get(ctx, HealthRedisKey(c.AccountID, r.Policy.Model, r.Profile, r.Reasoning, r.ContextBucket, r.Transport))
+		model := c.HealthModel
+		if model == "" {
+			model = r.Policy.Model
+		}
+		commands[c.AccountID] = pipe.HGet(ctx, HealthRedisKey(c.AccountID, model, r.Profile, r.Reasoning, r.ContextBucket, r.Transport, c.HealthIdentity), "snapshot")
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("%w: %v", ErrSharedState, err)
@@ -72,46 +82,6 @@ func (s *RedisStore) Snapshots(ctx context.Context, r SelectionRequest) (map[int
 		out[id] = state
 	}
 	return out, nil
-}
-func (s *RedisStore) Observe(ctx context.Context, o Observation) error {
-	if o.Excluded {
-		return nil
-	}
-	if s == nil || s.client == nil {
-		return ErrSharedState
-	}
-	if o.At.IsZero() {
-		o.At = time.Now()
-	}
-	key := HealthRedisKey(o.AccountID, o.Model, o.Profile, o.Reasoning, o.ContextBucket, o.Transport)
-	for n := 0; n < 8; n++ {
-		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
-			var old HealthSnapshot
-			b, e := tx.Get(ctx, key).Bytes()
-			if e != nil && !errors.Is(e, redis.Nil) {
-				return e
-			}
-			if e == nil {
-				if e = json.Unmarshal(b, &old); e != nil {
-					return e
-				}
-			}
-			next := AdvanceHealth(old, o)
-			raw, e := json.Marshal(next)
-			if e != nil {
-				return e
-			}
-			_, e = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error { pipe.Set(ctx, key, raw, 24*time.Hour); return nil })
-			return e
-		}, key)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, redis.TxFailedErr) {
-			return fmt.Errorf("%w: %v", ErrSharedState, err)
-		}
-	}
-	return fmt.Errorf("%w: concurrent health updates exceeded retry bound", ErrSharedState)
 }
 
 const reserveSelectionLua = `

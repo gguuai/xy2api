@@ -1,6 +1,6 @@
 # 可控调度实施验收映射
 
-日期：2026-09-27。本文对应隔离候选实现，不宣称已经上线或79项业务端到端验收全部完成。
+原始矩阵日期：2026-09-27；最新工程复审：2026-09-28，见末尾 final09 补充结果。本文对应隔离候选实现，不宣称已经上线或79项供应商业务端到端验收全部完成。
 
 原始矩阵：/xy2/artifacts/iq-candy-20260927/scheduling-research-20260927/ACCEPTANCE_MATRIX.json，79条当前用例。两条已废止TPS-only用例不计入。V3/V4/V5参考模型52/37/53条断言不是Go、PostgreSQL、Redis或协议验收证据。
 
@@ -188,3 +188,48 @@
 - 最后owner修复之后，legacy-owner-control-frozen-race.log实际-race通过20个顶层测试，其中TestControlledLegacyRollbackOwnerGuard含10个真实PG/Redis子场景：逻辑账号/凭据族暂停与排空、未登记会话、正常legacy、排空仍受硬健康限制、未人工控制时既有健康fallback、高级可移动路由暂停、缺请求上下文。原owner与WS回归一起通过；此定向结果不扩大为重新执行全部后端unit。
 - 最终冻结后BACKEND_OWNER_DISPATCH_FINAL两包-race实际exit_code=0，54个顶层PASS、无SKIP/FAIL，service 8.181s、handler 1.193s；BACKEND_FINAL_FROZEN_BUILD实际exit_code=0，stdout/stderr均为空。FINAL_SOURCE_VERIFICATION.json记录complete=true、race_exit_code=0、build_exit_code=0、source_unchanged=true；验收文档收口时再次核对全部3280个Go/SQL/mod/sum文件与该清单完全一致。生产二进制SHA256为baf6cf8beb877a60435e6929038f4cf98ac7f1ecd5ede2ef98c88730cbeb0172。
 - 全量unit数量不等于79项原业务验收全部通过；最终冻结后完成相关定向回归与生产构建，没有把owner修复前的全量结果改写成修复后重跑。生产多进程故障注入、全部供应商端到端联调和线上灰度指标仍按上表保留待验。
+
+## 2026-09-28 可靠性补充验收
+
+本节对应本次候选工作树，证据统一保存在 `/xy2/artifacts/scheduling-optimization-20260928`。上方历史矩阵不因新增实现而自动变为全项通过。默认调度仍为 legacy；controlled 未上线。
+
+| 风险与期望 | 已观察的本地证据 | 仍待上线前验证 |
+|---|---|---|
+| PG 终态持久化失败不丢已知结果 | 原版同一真实 PG 用例报 `could not determine data type of parameter $2`；修改版在隔离 PG 中通过终态、故障 intent 原子写入及补偿测试 | 生产迁移、备份与故障恢复演练 |
+| 无首字样本但终态成功可逐步恢复 | `phase-b/final-model-deadline-race-10.command.json` 及调度包 race；恢复按终态晋级，缺 TTFT 只暂停延迟判定，探测并发仍为 1 | 真实长流、低频账号与非流式跨天采样 |
+| 同站独立账号不被通用 429 连坐，组织共享配额减少无效重试 | `stage-c-go-04.command.json`、`stage-c-oauth-final.command.json` 与真实 PG/HTTP 定向测试；仅结构化错误与声明 pool 匹配才扩大故障域 | 各供应商实际错误格式和声明数据核对 |
+| UNKNOWN 不凭租约过期释放，补偿与共享门恢复只生效一次 | `final-domain-proof-01.command.json`：PG 故障触发器使结算失败时 B 仍被阻断；补偿完成才放行，重复补偿无效 | 真实进程崩溃、网络分区、跨版本恢复 |
+| 准备阶段截止时间阻止无效发送，已提交长流继续读取 | `phase-b/final-model-deadline-race-10.command.json` 和 `backend-mapping-deadline-final.command.json`；PG 锁等待超 D 后无发送、无实际尝试，释放锁后结算 not_sent | 全协议适配器组合、真实请求取消与副作用确认 |
+| 原始版本已存在的后台 Grok 测试竞态 | `grok-original-admin-race.command.json` 在只读原版上复现两项 race 失败；不是本次调度代码引入 | 后续独立修复测试夹具，再跑跨模块全量 race |
+
+本地测试未调用付费上游。完整服务包 race 运行含原有跨模块竞态及夹具失败，不能作为全包通过证据；调度定向结果、全量构建、lint、前端测试各以本轮实际命令账本为准。源码离线回滚不等于数据库迁移回滚。
+
+
+## 2026-09-28 执行复审与最终联合门禁
+
+当前状态：final09 同一冻结源码（77d8996cf2d844cbd2f6bc5035a402437f630dbb9dbcfafaee54acc8ad11479f）的五门禁与最终生产二进制升级/回滚/全新安装均已实际通过。归档是否与被测代码一致以当前 final-09 的 FINAL_VERIFICATION.json / FINAL_DELIVERY.json 为准，不能据旧 complete 字段交付。
+
+- 非流式 JSON 和上游强制 SSE 的缓冲适配器在解析验收后统一结算；EOF、终态事件名称或 HTTP 200 均不能单独解除健康门控。真实 text/event-stream 回归覆盖有效图片、8.4 MiB 终态图片、空图片、格式错误、策略拒绝、Alpha 缺失载荷与合法空搜索结果。
+- 保留成功可用性与首字延迟证据分离：完整缓冲结果增加成功证据，但不伪造首字样本；普通流式和关闭 controlled 路径保留既有语义。聊天/消息/Responses 及原生 Anthropic 转换链以联合源码回归为最终依据。
+- 故障反馈使用有索引的待办队列、逐项有界处理与退避；已删除身份不阻塞活跃账号。HTTP 错误状态已能证明远端拒绝，正文读取失败不继续占用 UNKNOWN 容量。
+- 验收脚本持久记录实际命令、退出码、原始 stdout/stderr、源码和输入哈希，禁止重复 run label 覆盖；中断后从保留容器的实际退出和日志恢复证据。Go test 要有实际 PASS 事件，SKIP 或测试名未匹配不算通过。
+- 全量 unit 与六个受影响包的 race 使用独立 PostgreSQL/Redis，已验证 unit 的 Redis DB15 FLUSHDB 不影响 race。Ent 生成器在一次性可写源码副本执行。生产构建还须验证 embed 标签并绑定生成的前端资源哈希，不能用普通后端构建代替。
+- 前端 952 个源文件与既有通过版本逐文件一致；复用其完整测试和构建记录，不声称本轮重新运行。源代码归档不含忽略的生成资源，生成资源和生产构建另有哈希记录。
+- 参考资料于 2026-09-28 再次读取 Anthropic 官方 Streaming 文档与 Go 官方 testing/allocs.go；下载状态、页面字节和哈希记录在 review-fixes-20260928/references-final-07/fetch.json。这些是协议/测量依据，不替代真实本地回归。
+- 完整 gate、当前归档的同输入 BASELINE/MODIFIED/ROLLBACK、补丁重建、原始文件哈希与四角色重开全部完成后才更新最终通过状态。生产灰度、真实供应商联调和在线数据库回滚不属于本地源码验证结论。
+
+### 独立全面审查补充（2026-09-28）
+
+- 独立 agent 已按 policy/runtime/统一预算/冷启动健康/共享故障域/UNKNOWN票据/补偿队列/管理控制/HTTP-SSE-WS-缓冲适配器范围完成有界审查，先复现再修复。报告和具体修复计划保存在 review-fixes-20260928/comprehensive-audit/audit_controlled_final/{REVIEW.md,PLAN.md,HANDOFF.json}。
+- FailureEvidenceFromResponse 显式 scope 必须匹配组织/项目/服务，或精确匹配冻结模型；缺失/错误模型及未知显式范围不再扩大为整个共享池。
+- ObserveFrame 同时识别两层 error.code/error.type、请求策略错误及明确负终态；兼容取消拼写，拒绝畸形 JSON 作为终态证据。既有语义提交时间不被改写，请求错误禁止无效重放。
+- 三组基线共11个反例真实失败；最终定向 race 46顶层 PASS、0 FAIL、18 SKIP。独立副本回滚后恢复原哈希且重新复现原11反例，15条观察输出逐字一致；五文件补丁重建完全一致。18个SKIP不当成真实存储通过，新增5个顶层测试已加入 final09 的29项必测。
+- 2026-09-28 实时读取 OpenAI 官方SDK的 Response.status 定义及 Anthropic 官方Streaming错误事件文档。成功HTTP记录和页面哈希见 references-final-09；两个首次猜测SDK文件路径返回404的记录保留，后改用官方文档成功，不将该准备错误记为产品失败。
+
+### final09 最终工程门禁结果
+
+- 全量 `go test -tags=unit ./...` 与 scheduling/service/handler/handler-admin/repository/migrations 六包 `-race` 均实际退出0；按记录中的测试名去重分别22,828 PASS/38 SKIP与19,687 PASS/17 SKIP，均0FAIL。全部29项显式必测在两套独立PG/Redis环境中都有真实PASS事件，两个跨进程父测试也实际PASS。
+- 普通build、golangci-lint及生产embed构建均退出0；embed测试93 PASS/0 SKIP。所有门禁使用同一3548文件冻结SHA，执行前后源码和已绑定脚本不变；没有将定向测试或旧快照结果冒作最终全量结果。
+- 最终binary实际启动完成305→308→恢复305及fresh308；四阶段健康/登录200、迁移文件名和校验集精确匹配，升级和回滚用户/config及三类持久标记保持；候选/fresh的实际JS资源与冻结dist逐字节相同。
+- 38/17个SKIP的完整名称保存在各门禁记录及FINAL_DELIVERY.json。调度worker入口由已通过的父测试启动；外部付费API、其他模块opt-in测试等不计为通过，不扩大为全供应商或生产验收结论。
+- 独立审查的完整计划、原失败、修复后race与回滚观察均已保留。其确认问题已闭环；最终源码三态测试、補丁重建及四角色重开另由当前归档事务独立验证。

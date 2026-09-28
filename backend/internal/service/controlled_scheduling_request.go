@@ -29,6 +29,7 @@ type ControlledRequest struct {
 	Model              string
 	Protocol           string
 	Reasoning          string
+	Stream             bool
 	ContextTokens      int64 // -1 means unknown; never infer tokens from byte length.
 	SessionID          string
 	ReplaySafe         bool
@@ -124,40 +125,42 @@ func (b *schedulingMetadataBody) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-func (r *ControlledRequest) metadata(body []byte) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(body, &fields) != nil || fields == nil {
-		r.mu.Lock()
-		r.Reasoning = "unknown"
-		r.ReplaySafe = false
-		r.mu.Unlock()
+
+// CaptureControlledRequestMetadata reuses the handler's validated body, model
+// and stream (including Gemini URL/action). No context token count is inferred.
+func CaptureControlledRequestMetadata(ctx context.Context, body []byte, model string, stream bool) {
+	r := controlledRequest(ctx)
+	if r == nil {
 		return
 	}
+	r.metadata(body)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.policyLoaded {
+		r.Model = model
+		r.Stream = stream
+	}
+}
+func (r *ControlledRequest) metadata(body []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.policyLoaded {
+		return
+	}
+	fields, replaySafe, valid := readSchedulingMetadata(bytes.NewReader(body), r.Protocol, "root")
+	if !valid {
+		r.Reasoning = "unknown"
+		r.ReplaySafe = false
+		return
+	}
+	r.ReplaySafe = replaySafe
 	if raw, present := fields["model"]; present && json.Unmarshal(raw, &r.Model) != nil {
 		r.ReplaySafe = false
 	}
+	if raw, present := fields["stream"]; present && json.Unmarshal(raw, &r.Stream) != nil {
+		r.ReplaySafe = false
+	}
 	r.Reasoning = controlledReasoningLabel(r.Protocol, fields)
-	var tools []map[string]json.RawMessage
-	if raw, present := fields["tools"]; present && json.Unmarshal(raw, &tools) != nil {
-		r.ReplaySafe = false
-		return
-	}
-	// Native Gemini tools have no required type and may execute server-side.
-	// Conservatively forbid replay of every nonempty native tool declaration.
-	if r.Protocol == "gemini" && len(tools) > 0 {
-		r.ReplaySafe = false
-		return
-	}
-	// Server-executed tools can have externally visible side effects before text.
-	// Such requests require provider idempotency before replay can be safe.
-	for _, tool := range tools {
-		var kind string
-		if json.Unmarshal(tool["type"], &kind) != nil || (kind != "function" && kind != "custom") {
-			r.ReplaySafe = false
-		}
-	}
 }
 
 // Metadata labels describe explicit client choices, not inferred model defaults.
@@ -307,7 +310,13 @@ func (r *ControlledRequest) Close() {
 		fn()
 	}
 	if pending && ctrl != nil {
-		ctrl.releaseDecision(d)
+		parent := r.clientContext
+		if parent == nil {
+			parent = context.Background()
+		}
+		cleanup, stop := controlledPreparationContext(parent, r)
+		ctrl.releaseDecisionContext(cleanup, d)
+		stop()
 	}
 	r.mu.Lock()
 	semantic, attempt := r.semanticAt, r.currentAttemptID

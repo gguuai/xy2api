@@ -5,10 +5,14 @@ export async function getPolicy(groupID: number, model: string, signal?: AbortSi
   const { data } = await apiClient.get<SchedulingPolicyDocument>('/admin/scheduling/policies', { params: { group_id: groupID, model }, signal })
   return data
 }
-export async function savePolicy(policy: SchedulingPolicy, expectedVersion: number): Promise<SchedulingPolicyDocument> {
+export async function savePolicy(policy: SchedulingPolicy, expectedVersion: number, resetHealthProfiles: string[] = []): Promise<SchedulingPolicyDocument> {
   const { data } = await apiClient.put<SchedulingPolicyDocument>('/admin/scheduling/policies', {
-    group_id: policy.group_id, model: policy.model, expected_version: expectedVersion, policy
+    group_id: policy.group_id, model: policy.model, expected_version: expectedVersion, policy, ...(resetHealthProfiles.length ? { reset_health_profiles: resetHealthProfiles } : {})
   })
+  return data
+}
+export async function restoreInheritance(groupID: number, model: string, expectedVersion: number): Promise<SchedulingPolicyDocument> {
+  const { data } = await apiClient.delete<SchedulingPolicyDocument>('/admin/scheduling/policies', { data: { group_id: groupID, model, expected_version: expectedVersion } })
   return data
 }
 export async function explain(request: SchedulingExplainRequest, signal?: AbortSignal): Promise<SchedulingExplanation> {
@@ -31,4 +35,4 @@ export async function getStats(groupID: number, model: string, since: string, si
   const { data } = await apiClient.get<SchedulingTrafficStats>('/admin/scheduling/stats', { params: { group_id: groupID, model, since }, signal })
   return data
 }
-export default { getPolicy, savePolicy, explain, getControl, setControl, getRequestAttempts, getStats }
+export default { getPolicy, savePolicy, restoreInheritance, explain, getControl, setControl, getRequestAttempts, getStats }

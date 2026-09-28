@@ -2,6 +2,7 @@
   <BaseDialog :show="show" :title="t('admin.scheduling.controlTitle') + ' · ' + (account?.name || '')" width="wide" @close="emit('close')">
     <div class="space-y-4">
       <p class="text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.drainHint') }}</p>
+      <AccountFailureDomains v-if="show && account" :account-id="account.id" />
       <label class="block text-sm font-medium">
         {{ t('admin.scheduling.scope') }}
         <select v-model="scope" class="input mt-1" :disabled="busy" data-testid="control-scope" @change="refresh(true)">
@@ -53,6 +54,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import AccountFailureDomains from './AccountFailureDomains.vue'
 import schedulingAPI from '@/api/admin/scheduling'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { isSchedulingConflict } from '@/utils/scheduling'

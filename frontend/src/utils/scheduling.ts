@@ -38,6 +38,7 @@ export function validateSchedulingPolicy(policy: SchedulingPolicy): string | nul
       (profile.context_min_tokens ?? 0) < 0 || (profile.context_max_tokens ?? 0) < 0 ||
       (profile.context_max_tokens && profile.context_max_tokens <= (profile.context_min_tokens ?? 0))) return 'invalidContext'
   }
+  if (overlappingProfiles(policy.profiles).length) return 'ambiguousProfiles'
   const retry = policy.retry
   for (const key of ['max_attempts', 'max_per_tier', 'max_per_account', 'initial_per_token', 'burst'] as const) {
     if (!Number.isSafeInteger(retry[key]) || retry[key] < 1) return 'invalidRetry'
@@ -50,4 +51,21 @@ export function isSchedulingConflict(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const value = error as { status?: number; response?: { status?: number } }
   return value.status === 409 || value.response?.status === 409
+}
+
+// Match backend selector specificity and half-open context ranges exactly.
+export function overlappingProfiles(profiles: ModelLatencyProfile[]): string[][] {
+  const transport = (raw = '') => {
+    const value = raw.trim().toLowerCase()
+    return ({ anthropic: 'messages', chat_completions: 'chat', response: 'responses', websocket: 'ws' } as Record<string, string>)[value] ?? value
+  }
+  const specificity = (p: ModelLatencyProfile) => (p.reasoning ? 4 : 0) + (transport(p.transport) ? 2 : 0) + ((p.context_min_tokens ?? 0) > 0 || (p.context_max_tokens ?? 0) > 0 ? 1 : 0)
+  const reasoning = (raw = '') => raw.trim().toLowerCase() || 'default'
+  const overlaps: string[][] = []
+  profiles.forEach((a, i) => profiles.slice(i + 1).forEach(b => {
+    if (specificity(a) !== specificity(b) || (a.reasoning && reasoning(a.reasoning) !== reasoning(b.reasoning)) || transport(a.transport) !== transport(b.transport)) return
+    if ((a.context_max_tokens && a.context_max_tokens <= (b.context_min_tokens ?? 0)) || (b.context_max_tokens && b.context_max_tokens <= (a.context_min_tokens ?? 0))) return
+    overlaps.push([a.name, b.name])
+  }))
+  return overlaps
 }

@@ -246,6 +246,9 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		nil,
 		nil, // userPlatformQuotaRepo
 	)
+	// These tests configure mutable billing stubs, not the ticket harvester.
+	// Join constructor-started workers before replacing fixture dependencies.
+	svc.StopOpenAICodexTicketHarvester()
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		rateRepo,
 		nil,

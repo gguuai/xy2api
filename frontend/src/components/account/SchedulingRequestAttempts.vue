@@ -24,6 +24,7 @@
           <div><dt class="text-gray-500">{{ t('admin.scheduling.settlementState') }}</dt><dd>{{ attempt.usage_pending ? t('admin.scheduling.settlementPending') : t('admin.scheduling.settlementDone') }}</dd></div>
         </dl>
         <p v-if="attempt.cancel_requested" class="mt-3 text-sm text-amber-700">{{ t('admin.scheduling.cancelRequested') }}</p>
+        <UnknownAttemptResolution v-if="attempt.state === 'unknown'" :ticket-id="attempt.ticket_id" @resolved="query" />
       </article>
     </div>
   </section>
@@ -36,6 +37,7 @@ import schedulingAPI from '@/api/admin/scheduling'
 import type { SchedulingRequestAttempts } from '@/types/scheduling'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime } from '@/utils/format'
+import UnknownAttemptResolution from './UnknownAttemptResolution.vue'
 
 const props = defineProps<{ initialRequestId?: string }>()
 const { t } = useI18n()

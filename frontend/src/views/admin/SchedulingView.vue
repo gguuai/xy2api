@@ -60,6 +60,8 @@
         <section class="scheduling-card">
           <div class="flex flex-wrap justify-between gap-2"><h2 class="font-semibold">{{ t('admin.scheduling.latencyProfiles') }}</h2><button type="button" class="btn btn-secondary" data-testid="add-profile" @click="addProfile">{{ t('admin.scheduling.addProfile') }}</button></div>
           <p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.latencyHint') }}</p>
+          <p class="mt-2 text-xs text-amber-700" data-testid="unknown-context-hint">{{ t('admin.scheduling.contextUnknownHint') }}</p>
+          <p v-if="profileDiagnostics.length" class="mt-2 text-sm text-amber-700" role="alert" data-testid="profile-diagnostics">{{ t('admin.scheduling.historicalProfileOverlap') }} {{ profileDiagnostics.join('; ') }}</p>
           <p class="mt-2 text-xs text-gray-500" data-testid="protocol-sampling-hint">{{ t('admin.scheduling.protocolSamplingHint') }}</p>
           <p v-if="!policy.profiles.length && !fallbackProfiles.length" class="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-950/30 dark:text-blue-300" data-testid="observe-only">{{ t('admin.scheduling.observeOnly') }}</p>
           <div v-if="fallbackProfiles.length" class="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-950/30 dark:text-blue-300" data-testid="inherited-profiles">
@@ -68,6 +70,7 @@
           </div>
           <fieldset v-for="(profile, index) in policy.profiles" :key="index" class="mt-4 rounded-xl border border-gray-200 p-4 dark:border-dark-600">
             <legend class="px-2 text-sm font-medium">{{ profile.name || t('admin.scheduling.profile') }}</legend>
+            <label v-if="explicitOverride && storedProfileNames.includes(profile.name)" class="mb-3 flex items-center gap-2 text-xs text-gray-500"><input v-model="resetHealthProfiles" type="checkbox" :value="profile.name">{{ t('admin.scheduling.resetProfileHealth', { revision: profile.health_revision ?? 0 }) }}</label>
             <div class="grid gap-3 sm:grid-cols-3">
               <label class="scheduling-label">{{ t('admin.scheduling.profileName') }}<input v-model.trim="profile.name" class="input mt-1"></label>
               <label class="scheduling-label">{{ t('admin.scheduling.reasoning') }}<input v-model.trim="profile.reasoning" class="input mt-1" :placeholder="t('admin.scheduling.anyReasoning')"></label>
@@ -90,6 +93,7 @@
         </section>
         <div class="sticky bottom-3 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 p-4 shadow-lg dark:border-dark-600 dark:bg-dark-800/95">
           <span class="text-sm" :class="conflict || !scopeMatches ? 'text-amber-600' : 'text-gray-500'">{{ conflict ? t('admin.scheduling.policyConflict') : !scopeMatches ? t('admin.scheduling.scopeChanged') : t('admin.scheduling.saveHint') }}</span>
+          <button v-if="policy.group_id && explicitOverride" type="button" class="btn btn-secondary" :disabled="saving || loading || conflict || !scopeMatches" data-testid="restore-inheritance" @click="restoreInheritance">{{ t('admin.scheduling.restoreInheritance') }}</button>
           <button type="submit" class="btn btn-primary" :disabled="saving || loading || conflict || !scopeMatches" data-testid="save-policy">{{ saving ? t('common.loading') : t('common.save') }}</button>
         </div>
         </fieldset>
@@ -98,8 +102,11 @@
       <section v-if="policy" class="scheduling-card">
         <h2 class="font-semibold">{{ t('admin.scheduling.explainTitle') }}</h2><p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.explainHint') }}</p>
         <div class="mt-4 grid gap-3 sm:grid-cols-3"><label class="scheduling-label">{{ t('admin.scheduling.protocol') }}<select v-model="explainProtocol" class="input mt-1" data-testid="explain-protocol"><option v-for="protocol in protocols" :key="protocol" :value="protocol">{{ protocolLabel(protocol) }}</option></select></label><label class="scheduling-label">{{ t('admin.scheduling.reasoning') }}<input v-model.trim="explainReasoning" class="input mt-1"></label><label class="scheduling-label">{{ t('admin.scheduling.contextTokens') }}<input v-model.number="explainContext" type="number" min="0" step="1" class="input mt-1" :placeholder="t('admin.scheduling.unknownContext')"></label></div>
+        <p class="mt-2 text-xs text-gray-500">{{ t('admin.scheduling.explainContextHint') }}</p>
         <button type="button" class="btn btn-secondary mt-4" :disabled="explaining || saving || !scopeMatches" data-testid="explain" @click="runExplain">{{ explaining ? t('common.loading') : t('admin.scheduling.runExplain') }}</button>
         <div v-if="explanation" class="mt-4" aria-live="polite"><p class="text-sm font-medium">{{ t('admin.scheduling.explainResult', { version: explanation.policy_version }) }} · {{ explanation.reason }}</p><p class="mt-1 text-sm">{{ t('admin.scheduling.selectedAccount') }}: {{ explanation.selected_account_id ? accountName(explanation.selected_account_id) : '—' }}</p>
+          <p v-if="explanation.profile" class="mt-2 text-xs text-gray-500" data-testid="resolved-profile">{{ t('admin.scheduling.resolvedProfile') }}: {{ explanation.profile.name }} · {{ explanation.profile_source }} · {{ explanation.context_bucket }} · {{ explanation.reasoning_effort }} · {{ t('admin.scheduling.healthRevision') }} {{ explanation.profile.health_revision ?? 0 }}</p>
+          <p v-if="explanation.profile_diagnostics?.length" class="mt-2 text-sm text-amber-700">{{ t('admin.scheduling.historicalProfileOverlap') }} {{ explanation.profile_diagnostics.map(item => item.profiles.join(' / ')).join('; ') }}</p>
           <div class="mt-3 overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th class="p-2">{{ t('admin.scheduling.account') }}</th><th class="p-2">{{ t('admin.scheduling.priority') }}</th><th class="p-2">{{ t('admin.scheduling.weight') }}</th><th class="p-2">{{ t('admin.scheduling.targetShare') }}</th><th class="p-2">{{ t('admin.scheduling.health') }}</th><th class="p-2">{{ t('admin.scheduling.recoveryProgress') }}</th><th class="p-2">{{ t('admin.scheduling.decision') }}</th></tr></thead><tbody><tr v-for="candidate in explanation.candidates" :key="candidate.account_id" class="border-t border-gray-100 dark:border-dark-700"><td class="p-2">{{ candidate.account_name || accountName(candidate.account_id) }}</td><td class="p-2">{{ candidate.priority }}</td><td class="p-2">{{ candidate.traffic_weight }}</td><td class="p-2">{{ candidate.target_share == null ? '—' : (candidate.target_share * 100).toFixed(1) + '%' }}</td><td class="p-2">{{ candidate.health || '—' }} / {{ candidate.control_state || '—' }}<div v-if="candidate.current_concurrency != null" class="text-xs text-gray-500">{{ candidate.current_concurrency }} / {{ candidate.concurrency_limit ?? '—' }}</div></td><td class="p-2"><span>{{ recoveryStage(candidate) }}</span><div v-if="candidate.health?.toLowerCase() === 'recovering'" class="text-xs text-gray-500">{{ t('admin.scheduling.recoveryGood') }} {{ candidate.good_streak ?? t('admin.scheduling.unobserved') }}<br>{{ t('admin.scheduling.effectiveShare') }}: {{ candidate.effective_share == null ? t('admin.scheduling.unobserved') : (candidate.effective_share * 100).toFixed(2) + '%' }}</div></td><td class="p-2" :class="candidate.eligible ? 'text-emerald-600' : 'text-amber-600'">{{ candidate.reason }}</td></tr></tbody></table></div>
           <p class="mt-2 text-xs text-gray-500">{{ t('admin.scheduling.noActualMetrics') }}</p>
         </div>
@@ -134,6 +141,10 @@ const scopeModel = ref(typeof route.query.model === 'string' ? route.query.model
 const policy = ref<SchedulingPolicy | null>(null)
 const loadedVersion = ref(0)
 const inheritedPolicyVersion = ref<number | null>(null)
+const explicitOverride = ref(false)
+const profileDiagnostics = ref<string[]>([])
+const resetHealthProfiles = ref<string[]>([])
+const storedProfileNames = ref<string[]>([])
 const globalDefaults = ref<SchedulingPolicy | null>(null)
 const groups = ref<AdminGroup[]>([])
 const accounts = ref<AccountListItem[]>([])
@@ -184,6 +195,9 @@ async function loadPolicy() {
       groupID ? schedulingAPI.getPolicy(0, model, requests.signal) : Promise.resolve(null)
     ])
     if (!alive || generation !== loadGeneration) return
+    explicitOverride.value = !!document.policy
+    profileDiagnostics.value = [...(document.diagnostics ?? []), ...(defaults?.diagnostics ?? [])].map(item => item.profiles.join(' / '))
+    resetHealthProfiles.value = []; storedProfileNames.value = document.policy?.profiles.map(profile => profile.name) ?? []
     globalDefaults.value = defaults?.policy ? structuredClone(defaults.policy) : null
     inheritedPolicyVersion.value = !document.policy && defaults?.policy ? defaults.version : null
     const effective = document.policy ?? defaults?.policy
@@ -201,15 +215,31 @@ async function save() {
   if (validation) { error.value = t('admin.scheduling.errors.' + validation); return }
   saving.value = true
   try {
-    const document = await schedulingAPI.savePolicy(JSON.parse(JSON.stringify(policy.value)), loadedVersion.value)
+    const draft = JSON.parse(JSON.stringify(policy.value))
+    const document = resetHealthProfiles.value.length ? await schedulingAPI.savePolicy(draft, loadedVersion.value, resetHealthProfiles.value) : await schedulingAPI.savePolicy(draft, loadedVersion.value)
     if (!alive) return
     policy.value = document.policy; loadedVersion.value = document.version; explanation.value = null; inheritedPolicyVersion.value = null
+    explicitOverride.value = true; resetHealthProfiles.value = []; storedProfileNames.value = document.policy?.profiles.map(profile => profile.name) ?? []; profileDiagnostics.value = []
     notice.value = t('admin.scheduling.saved', { version: document.version })
   } catch (err) {
     if (!alive) return
     conflict.value = isSchedulingConflict(err)
     error.value = conflict.value ? t('admin.scheduling.policyConflict') : extractApiErrorMessage(err, t('admin.scheduling.saveFailed'))
   } finally { saving.value = false }
+}
+async function restoreInheritance() {
+  if (!policy.value || !policy.value.group_id || !explicitOverride.value || saving.value || conflict.value || !scopeMatches.value) return
+  saving.value = true; error.value = ''; notice.value = ''
+  let restored = false
+  try {
+    await schedulingAPI.restoreInheritance(policy.value.group_id, policy.value.model, loadedVersion.value)
+    restored = true
+  } catch (err) {
+    if (!alive) return
+    conflict.value = isSchedulingConflict(err)
+    error.value = conflict.value ? t('admin.scheduling.policyConflict') : extractApiErrorMessage(err, t('admin.scheduling.saveFailed'))
+  } finally { saving.value = false }
+  if (restored && alive) { await loadPolicy(); if (!error.value) notice.value = t('admin.scheduling.restoredInheritance') }
 }
 async function runExplain() {
   if (!policy.value || !scopeMatches.value || explaining.value) return

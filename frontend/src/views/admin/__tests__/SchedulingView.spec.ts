@@ -3,8 +3,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createSchedulingPolicy } from '@/utils/scheduling'
 import englishScheduling from '@/i18n/locales/en/admin/scheduling'
 import chineseScheduling from '@/i18n/locales/zh/admin/scheduling'
-const { getPolicy, savePolicy, explain, list, getAllIncludingInactive } = vi.hoisted(() => ({ getPolicy: vi.fn(), savePolicy: vi.fn(), explain: vi.fn(), list: vi.fn(), getAllIncludingInactive: vi.fn() }))
-vi.mock('@/api/admin/scheduling', () => ({ default: { getPolicy, savePolicy, explain } }))
+const { getPolicy, savePolicy, restoreInheritance, explain, list, getAllIncludingInactive } = vi.hoisted(() => ({ getPolicy: vi.fn(), savePolicy: vi.fn(), restoreInheritance: vi.fn(), explain: vi.fn(), list: vi.fn(), getAllIncludingInactive: vi.fn() }))
+vi.mock('@/api/admin/scheduling', () => ({ default: { getPolicy, savePolicy, restoreInheritance, explain } }))
+vi.mock('@/api/admin/schedulingDomains', () => ({ getFailureDomains: vi.fn(), putFailureDomains: vi.fn(), permitFailureRecovery: vi.fn(), getUnknownAttempt: vi.fn(), resolveUnknownAttempt: vi.fn() }))
 vi.mock('@/api/admin/accounts', () => ({ default: { list } }))
 vi.mock('@/api/admin/groups', () => ({ default: { getAllIncludingInactive } }))
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
@@ -163,4 +164,30 @@ describe('SchedulingView', () => {
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(savePolicy.mock.calls[0][0].profiles[0].transport).toBe('messages')
   })
+})
+
+it('shows unknown production context and requires an explicit group override for restore', async () => {
+  const wrapper = await setup()
+  expect(wrapper.get('[data-testid="unknown-context-hint"]').text()).toContain('contextUnknownHint')
+  expect(wrapper.find('[data-testid="restore-inheritance"]').exists()).toBe(false)
+  getPolicy.mockImplementation(async (groupID: number) => ({ ...savedDocument(), group_id: groupID, policy: { ...savedDocument().policy, group_id: groupID } }))
+  await wrapper.get('[data-testid="scope-group"]').setValue(2)
+  await wrapper.get('[data-testid="load-policy"]').trigger('click'); await flushPromises()
+  restoreInheritance.mockResolvedValue({ group_id: 2, model: 'custom', version: 8, policy: null })
+  getPolicy.mockImplementation(async (groupID: number) => groupID ? { group_id: 2, model: 'custom', version: 8, policy: null } : savedDocument())
+  await wrapper.get('[data-testid="restore-inheritance"]').trigger('click'); await flushPromises()
+  expect(restoreInheritance).toHaveBeenCalledWith(2, 'custom', 7)
+  expect(wrapper.find('[data-testid="restore-inheritance"]').exists()).toBe(false)
+  expect(wrapper.get('[data-testid="inherited-policy"]').exists()).toBe(true)
+})
+it('retains the group draft after a restore CAS conflict', async () => {
+  const wrapper = await setup()
+  getPolicy.mockImplementation(async (groupID: number) => ({ ...savedDocument(), group_id: groupID, policy: { ...savedDocument().policy, group_id: groupID } }))
+  await wrapper.get('[data-testid="scope-group"]').setValue(2)
+  await wrapper.get('[data-testid="load-policy"]').trigger('click'); await flushPromises()
+  restoreInheritance.mockRejectedValue({ status: 409 })
+  await wrapper.get('[data-testid="restore-inheritance"]').trigger('click'); await flushPromises()
+  expect(restoreInheritance).toHaveBeenCalledTimes(1)
+  expect(wrapper.get('[data-testid="restore-inheritance"]').attributes('disabled')).toBeDefined()
+  expect(wrapper.get('[role="alert"]').text()).toContain('policyConflict')
 })

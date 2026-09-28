@@ -24,13 +24,14 @@ TPS, cost scores, soft affinity, or the old load factor.
   seconds; a later upstream Retry-After wins. Unexpired OPEN accounts cannot enter
   the all-degraded fallback. Observe-only still samples failures, opens on 3/5,
   and recovers on complete successful requests; it never applies TTFT thresholds.
-- Recovery requires three **complete successful** comparable requests at or below
-  R, then 10%/30%/100% of the account's normal configured pool share, with three new
-  successful samples and 30 seconds per ramp stage. Without latency configuration,
-  complete success replaces the R check. A progress chunk is not complete success;
-  a later response.failed must set AttributableFailure. Stale samples cannot
-  advance a stage. With no healthy recipient, explicit bounded-best-effort handles
-  traffic under capacity limits instead of deadlocking on percentage caps.
+- Recovery separates availability from latency evidence. Three complete successful
+  requests qualify availability bootstrap, including non-streaming responses.
+  A latency-caused recovery additionally requires real comparable TTFT at or below
+  R; missing TTFT neither qualifies nor erases proven fast results. The requirement
+  survives OPEN. Each 10%/30%/100% ramp stage requires three new qualifying terminals
+  and 30 seconds. Probe concurrency stays one until HEALTHY. Qualifications survive
+  the 120-second sample window; the whole health key still expires after 24 hours.
+  Headers, partial output, HTTP errors and local cancellation cannot qualify.
 - UNKNOWN bootstrap allows one probe per account. With a healthy recipient,
   canaries also share a pool-wide concurrency lease. No paid synthetic probes run.
 - All-slow ranking is a conservative mean wait penalty, not an estimated quantile:
@@ -142,3 +143,24 @@ responses, chat, messages, gemini, ws and http remain separate. Gemini native
 nonempty tools are conservatively replay-unsafe even if an item has no type
 field or combines a misleading function/custom type with a server tool field.
 This intentionally does not infer provider idempotency for native tools.
+
+## Observation identity and failure scope
+
+Final health admission freezes stable upstream identity, server-allocated profile
+health revision, Redis generation and stage. Observation carries that fence and
+the durable attempt ID; it never refreshes the fence at completion. Snapshot and
+deduplication receipts share one Redis hash. At 4096 receipts the next accepted
+terminal rotates generation atomically while preserving the resulting health
+state, bounding memory and rejecting old in-flight feedback conservatively.
+
+Explicit quota and availability pools are optional and require matching structured
+provider evidence before a failure expands. Actual mapped model and actual parent
+credential owner are frozen at dispatch. OAuth token rotation invalidates stale
+credential feedback while preserving stable health identity. Domain recovery
+occupancy lives on existing PG attempts; Redis expiry cannot free UNKNOWN work.
+Health observation with credential checks holds bounded PG identity read locks
+through its Redis update. This is not a distributed Redis/PostgreSQL transaction.
+
+Health/selection/profile tests, real PG and Redis fixtures, and separately executed
+gateway-process fixtures run without paid upstream requests. Documentation of a
+contract is not evidence that every production provider has been exercised.

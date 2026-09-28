@@ -135,6 +135,9 @@ func (s *GatewayService) ForwardAsResponses(
 
 	// 10. Build upstream request
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+	if !clientStream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 	upstreamReq, forwardedBody, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
 	releaseUpstreamCtx()
 	if err != nil {
@@ -349,7 +352,8 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
-) (*ForwardResult, error) {
+) (_ *ForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -361,6 +365,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
+	terminal, failed := false, false
 	var usage ClaudeUsage
 
 	for scanner.Scan() {
@@ -391,6 +396,12 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 
 		// message_start carries the initial response structure
+		terminal = terminal || event.Type == "message_stop"
+		failed = failed || event.Type == "error"
+		if event.Type == "error" {
+			observeControlledBufferedFailure(resp, []byte(payload))
+		}
+
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -437,8 +448,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	if finalResp == nil {
+		err := fmt.Errorf("upstream stream ended without response")
+		rejectControlledNonstreamResponse(resp, err)
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
+		return nil, err
 	}
 
 	// Update usage from accumulated delta
@@ -455,6 +468,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	if claude.IsOpus55(mappedModel) {
 		finalResp.Model = mappedModel
 	}
+	if err := validateAnthropicBufferedResponse(resp, finalResp, terminal && !failed); err != nil {
+		return nil, err
+	}
+
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel // Use original model name
 

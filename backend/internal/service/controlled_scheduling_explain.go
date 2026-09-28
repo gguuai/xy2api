@@ -179,6 +179,18 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			eligible = false
 			reason = "weight_zero"
 		}
+		var failureDomains []string
+		if eligible && p.Enabled {
+			allowed, domains, failureErr := s.controlledFailureCandidate(ctx, &a, input.Model)
+			if failureErr != nil {
+				return nil, failureErr
+			}
+			failureDomains = domains
+			if !allowed {
+				eligible = false
+				reason = "failure_domain_gate"
+			}
+		}
 		used := counts[a.ID]
 		if info := load[a.ID]; info != nil {
 			if info.CurrentConcurrency > used {
@@ -188,7 +200,11 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			return nil, scheduling.ErrSharedState
 		}
 		capacity := a.Concurrency <= 0 || used < a.Concurrency
-		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: eligible, CapacityAvailable: capacity})
+		healthIdentity, healthErr := s.controlledHealthIdentity(ctx, &a)
+		if healthErr != nil {
+			return nil, healthErr
+		}
+		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: eligible, CapacityAvailable: capacity, FailureDomains: failureDomains, HealthIdentity: healthIdentity, HealthModel: a.GetMappedModel(input.Model)})
 		rows = append(rows, schedulingExplainRow{ID: a.ID, Name: a.Name, Priority: priority, Weight: weight, Eligible: eligible, Reason: reason, Control: state.State, FamilyControl: family.State, CurrentConcurrency: used, ConcurrencyLimit: a.Concurrency, CapacityAvailable: capacity})
 	}
 	mode, reason := "legacy", "legacy_mode_observation"
@@ -243,5 +259,15 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			row.Reason = "health_cooldown"
 		}
 	}
-	return map[string]any{"policy_version": p.Version, "policy_source": policySource, "mode": mode, "reason": reason, "profile": profile, "profile_source": profileSource, "context_bucket": req.ContextBucket, "protocol": input.Protocol, "candidates": rows, "readonly": true, "selected_account_id": selected, "snapshot_at": snapshot.SnapshotAt, "scope": "ordinary_first_request_group_defaults", "scope_notes": []string{"No reservation is made; final dispatch rechecks control and capacity.", "Owner/session continuation, API-key authorization and user billing overrides require the real request context."}}, nil
+	return map[string]any{"policy_version": p.Version, "policy_source": policySource, "mode": mode, "reason": reason, "profile": profile, "profile_source": profileSource, "context_bucket": req.ContextBucket, "context_tokens_known": input.ContextTokens != nil, "context_source": func() string {
+		if input.ContextTokens != nil {
+			return "explain_input"
+		}
+		return "unknown"
+	}(), "reasoning_effort": input.Reasoning, "profile_diagnostics": append(scheduling.ProfileAmbiguities(p), func() []scheduling.ProfileDiagnostic {
+		if defaults != nil && policySource == "scope" {
+			return scheduling.ProfileAmbiguities(*defaults)
+		}
+		return nil
+	}()...), "protocol": input.Protocol, "candidates": rows, "readonly": true, "selected_account_id": selected, "snapshot_at": snapshot.SnapshotAt, "scope": "ordinary_first_request_group_defaults", "scope_notes": []string{"No reservation is made; final dispatch rechecks control and capacity.", "Owner/session continuation, API-key authorization and user billing overrides require the real request context.", "Production context tokens are unknown. No byte/token estimate is used. Explain context_tokens is a hypothetical input, not a production observation."}}, nil
 }

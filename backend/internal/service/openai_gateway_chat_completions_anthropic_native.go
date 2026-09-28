@@ -115,6 +115,9 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	}
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+	if !clientStream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 	upstreamReq, forwardedBody, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
 	releaseUpstreamCtx()
 	if err != nil {
@@ -156,7 +159,8 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	upstreamModel string,
 	reasoningEffort *string,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -167,6 +171,7 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	var finalResp *apicompat.AnthropicResponse
+	terminal, failed := false, false
 	var usage ClaudeUsage
 
 	// 读间隔上限：上游挂住 SSE 时中止组装（缓冲路径尚未提交响应头，可回 502）。
@@ -225,6 +230,12 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 			continue
 		}
 
+		terminal = terminal || event.Type == "message_stop"
+		failed = failed || event.Type == "error"
+		if event.Type == "error" {
+			observeControlledBufferedFailure(resp, []byte(payload))
+		}
+
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -256,8 +267,10 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	}
 
 	if finalResp == nil {
+		err := fmt.Errorf("upstream stream ended without response")
+		rejectControlledNonstreamResponse(resp, err)
 		writeChatCompletionsError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
+		return nil, err
 	}
 
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
@@ -267,6 +280,10 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 		}
+	}
+
+	if err := validateAnthropicBufferedResponse(resp, finalResp, terminal && !failed); err != nil {
+		return nil, err
 	}
 
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
@@ -296,6 +313,30 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 		Stream:           false,
 		Duration:         time.Since(startTime),
 	}, nil
+}
+
+// Validate the assembled provider envelope before conversion can invent a
+// successful downstream completion. Uncontrolled and disabled routes retain
+// their existing adapter behavior.
+func validateAnthropicBufferedResponse(resp *http.Response, response *apicompat.AnthropicResponse, terminal bool) error {
+	if resp == nil {
+		return nil
+	}
+	b, ok := resp.Body.(*controlledResponseBody)
+	if !ok || !b.buffered {
+		return nil
+	}
+	b.dispatch.request.mu.Lock()
+	enabled := b.dispatch.request.Policy.Enabled
+	b.dispatch.request.mu.Unlock()
+	if !enabled || !terminal {
+		return validateControlledNonstreamResponse(resp, nil, "messages")
+	}
+	body, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return validateControlledNonstreamResponse(resp, body, "messages")
 }
 
 // handleCCStreamingFromNativeAnthropic reads Anthropic SSE events, converts each

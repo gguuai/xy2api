@@ -657,6 +657,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	// 路径本来就无条件脱钩，这里对齐；上游侧仍由 ResponseHeaderTimeout 兜底。
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
+	if !parsed.Stream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
 	if err != nil {
@@ -963,9 +966,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	c *gin.Context,
 	account *Account,
 	parsed *OpenAIImagesRequest,
-) (OpenAIUsage, int, []string, error) {
+) (_ OpenAIUsage, _ int, _ []string, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		return OpenAIUsage{}, 0, nil, err
+	}
+	if err := validateControlledNonstreamResponse(resp, body, "images"); err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
