@@ -4,6 +4,18 @@
 
 ## 当前交接状态
 
+### XY2API 0.2.0 发布与验收完成（2026-09-28，生产未部署）
+
+- 冻结上游 Sub2API 稳定 annotated tag v0.2.8，tag object d7a82d78ca51d42be41cb4daa3510ea401defe9f，目标/本轮共同祖先 fd80b08c90b55edcad5b00171b53f08721d30da1。该稳定版已由 PR #62 合入；冻结的 upstream/main 仅多一个 VERSION 同步提交 a3eb7ef302961cba716dc78b39b93b60c467db0e。使用既有 sync.py 生成 docs/upstream-sync/v0.2.8-main-delta.json，没有重复 merge 或覆盖二开。
+- 开始时的全部开放 PR 已合并：IQ #65 → c502ea7f48266e5eca44423fa1571f1a7bd9ee47；智能可控调度 #66 → a26351e29f442a345432d595732f1a5aa7d3938f。STATE/IQ/质量路由/导出/计费/插件兼容能力保留，调度默认仍为 legacy，controlled 需按模型配置和灰度。
+- RC #67 → 8e9c59fbd0780908c20abd65149fe78162329584；正式 #68 → 414ef5a7694c65dab289ae3bb9c96b0515cf2887。四个 PR 最新 head 均18项检查成功，按 expected head 正常 merge，保护规则未改。正式提升仅修改 VERSION 与 UPSTREAM_BASE.json.xy2api_version 为0.2.0，兼容版本保持0.2.8。
+- annotated RC tag object a105bfc9040e9efa05713ec5307494586008e29f，正式 v0.2.0 tag object f581c9d9d83a8c168f665934edf1366fa1a408ea；Release runs 36346830402 / 36348544776 成功。正式非draft、非prerelease；两版五平台包实际下载复算SHA-256，Linux版本/兼容/完整提交正确。
+- GHCR 正式 digest sha256:98887a1cdaafc42fcdeb4b03b0bf911a2aa3b4ed13db2901014181a83e2509ef；linux/amd64、linux/arm64 的 version/revision 正确，0.2.0/latest/0.2/0 一致。RC双架构通过；DockerHub因缺少可选凭据跳过。
+- 隔离0.1.9→RC→恢复升级前数据库并回退0.1.9→0.2.0、RC及正式全新安装，共六次health/login均200；迁移302→305→302，用户、配置哈希与数据库/Redis/应用标记保持。原302条SQL字节/校验不变，新增256–258。临时容器/网络/卷已清理，原有容器启动时间和运行状态保持。
+- 源码三态：BASELINE 0.1.9/0.2.8/302，MODIFIED 0.2.0/0.2.8/305，ROLLBACK恢复基线；补丁重建与恢复归档SHA一致。发布四角色为/xy2/artifacts/release-0.2.0/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}；回滚依赖同目录BASELINE.tar，只恢复源码副本。原IQ/调度角色保持。
+- 流程偏差：RC工作流成功后先晋级正式标签，独立制品校验、RC升级/回退和正式全新安装在标签之后完成，不能称其在打正式标签前已通过。PR #67首次被运行中的test拒绝，待全绿后才重试；归档权限口径和internal网络端口夹具错误修正后通过，原失败保留。后续必须恢复完整RC门禁在晋级前完成的顺序。
+- 本收尾只更新项目记忆，不移动标签。原/xy2/xy2api并行未提交研究保留；发布验收使用/xy2/release-0.2.0。生产部署、真实上游模型调用未执行。
+
 ### PR #66 推送失败复核与 lint 闭环（2026-09-27）
 
 - 复核确认此前不是 Git 推送失败：`86a6b05b8` 已在远端，PR #66 的实际阻断是 `golangci-lint` 报告的 37 项问题。修复覆盖错误返回值检查、类型断言、Redis 依赖豁免说明、De Morgan 静态规范、未使用代码和所有受影响文件格式化；sqlmock 清理改为显式忽略其未声明的 Close 错误，避免测试清理断言制造假失败。
@@ -303,15 +315,15 @@
 - 最终相关后端单测、真实 PostgreSQL/Redis 集成、前端相关测试、类型/i18n/lint/生产构建、服务编译和独立 go vet 均成功；六输入 BASELINE/MODIFIED/ROLLBACK 通过，累计补丁可重建相同 SHA-256 的归档。综合静态检查首轮 SIGKILL、低内存重试 exit 4 超时，不能把其中 0 issues 当作成功；缓存复验最终结果见 VERIFICATION.txt。保留原有一项 Redis 批量负载集成测试跳过及构建体积提示。
 - 用户补正生产用户名为 ubuntu。首次密码认证成功，后台复用连接失效后，后续 SSH 返回 Connection refused，尚未成功读取任何远端命令输出；HTTP IP 仍返回 Caddy 308，缺真实域名/SNI。生产内部只读审计仍受阻。本轮未部署、发版或发出真实模型请求。方案见 `openspec/changes/iq-detection-operations/`。
 
-最后更新：`2026-09-23`（UTC）；下表记录 v0.1.9 发布来源，最终交接文档提交位于发布标签之后。
+最后更新：`2026-09-28`（UTC）；下表记录v0.2.0发布来源，收尾文档独立于不可变标签。
 
 | 项目 | 当前事实 |
 | --- | --- |
-| 仓库路径 | `/xy/xy2api` |
+| 仓库路径 | `/xy2/xy2api`；发布验收工作树 `/xy2/release-0.2.0` |
 | 当前分支 | main；最终交接文档由受保护 PR 合并，发布标签保持不可变 |
-| 发布提交 | `v0.1.9` / `504f633ee5dfae6d21b541b276cb15da3dcbce3e`，版本 PR #63 |
+| 发布提交 | `v0.2.0` / `414ef5a7694c65dab289ae3bb9c96b0515cf2887`，版本 PR #68 |
 | 工作树 | 发布来源已核对干净；本表所在文档只补充验收记录 |
-| XY2API 产品版本 | 本地与远端 main 产品 `0.1.9` / 兼容 `0.2.8` |
+| XY2API 产品版本 | 正式产品 `0.2.0` / 兼容 `0.2.8`；原工作树保留未提交研究 |
 | 已审计的 Sub2API 基线 | `v0.2.8` / commit `fd80b08c90b55edcad5b00171b53f08721d30da1`；同步 PR #62 |
 | 基线 provenance | resolved，43 项人工裁决；同步 merge `522494784` |
 | 本地远端 | `origin` 可读写；`upstream` 仅允许 fetch，push URL 为 `DISABLED` |
@@ -1184,3 +1196,11 @@ pnpm --dir frontend run build
 - 三角色并行只读反证审查加ROOT协议边界验证，发现并证实R1–R6（4 P1/2 P2）：发送确定性、终态持久化、probe容量溢出、全慢恢复饥饿、回流分母、Explain请求档不一致。全部报告给出具体源码行、触发、影响、实际命令结果与建议，没有在本轮暗改业务修复。
 - 两个控制缺陷使用真实隔离PostgreSQL/Redis/local TCP/HTTP，期望恢复的测试exit1；UI一致性测试exit1；策略缺陷通过断言现状复现，exit0不表示已修复。原语义/元数据定向回归exit0，新增256KiB边界观察exit0。测试夹具清理，原工作目录和生产服务未修改。
 - 结论为方向合理、故障闭环未完成，当前不建议生产部署（legacy也受两项P1影响）。先修容量与可靠结算，再修恢复与解释一致性；业务实现仍为2a9c62f，当前变更仅交接文档。完整证据位于 scheduling-implementation-20260927/post-commit-review-20260927，既有四角色/原三态保留并追加审查账本。
+
+### 2026-09-28 — 20260927-upstream-v0.2.0-release — 同步重检、合并、发布与验收完成
+
+- 上游稳定v0.2.8已包含，本轮main增量仅VERSION，生成来源报告并通过审计，未伪造功能合并。IQ #65、调度 #66、RC #67及正式 #68通过固定head检查后正常合并。
+- v0.2.0固定414ef5a7694c65dab289ae3bb9c96b0515cf2887，工作流36348544776成功；五平台SHA、Linux版本、GHCR双架构和稳定别名一致。正式提升只有VERSION与provenance产品版本变化。
+- 六次隔离启动/升级/备份恢复回退通过，302条历史迁移字节不变，新版305条；用户/配置/持久标记保持，临时资源已清理，原有部署未改写。
+- 四角色及逐命令stdout/stderr/退出码、源码三态、补丁重建、回滚哈希固定于/xy2/artifacts/release-0.2.0。原工作树未提交研究、原IQ/调度交付保持，收尾文档独立于发布标签。
+- 原始失败与流程顺序偏差如实保留：独立制品和RC隔离验收在正式标签之后补齐，不回写为发布前已通过。后续严格先完成RC全部门禁再晋级；生产灰度与真实供应商场景仍按既有上线门禁执行。
