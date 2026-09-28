@@ -4,13 +4,18 @@
 
 ## 当前交接状态
 
-### 调度优化 PR 与独立测试部署（2026-09-28，执行中）
+### 调度优化 PR #71 与独立测试部署（2026-09-28，已部署）
 
-- 用户明确授权提交、推送并创建 PR，随后在本机部署隔离测试版本，域名 `test.aiaimax.cyou`；不包含合并 PR 或替换现有开发实例。
-- 基于已通过 final09 的候选提交；后端与已验收生产embed二进制保持字节一致。新测试实例使用独立PostgreSQL/Redis/数据卷和随机密钥，fresh数据库，不复制开发数据；计划仅绑定127.0.0.1:8093。
-- 已确认域名A记录指向本机，现有Caddy开发站点保持原配置；待PR创建且新app健康后追加test独立站点并验证HTTPS。具体实际结果记录到artifact的pr-test-deploy-20260928；原四角色路径继续复用。
+- 已按用户授权提交并推送 `feat/scheduling-reliability-20260928`，PR #71：https://github.com/liulixin-lex/xy2api/pull/71，目标main，保持开放未合并。功能提交 `da829ac73a9f992e85fb8c68c4de143c70667513` 的18项远端CI检查实际全部SUCCESS；后续交接文档提交的最新检查以PR对应head及artifact/ci记录为准。
+- 本机独立测试站 `https://test.aiaimax.cyou` 已上线，Compose项目 `xy2-test-aiaimax`，app仅监听127.0.0.1:8093。PostgreSQL、Redis、持久卷、网络、JWT及加密密钥均独立，使用fresh数据库，未复制开发账号/配置；现有15个开发容器身份、启动时间、镜像、挂载与网络保持一致。
+- 部署镜像 `sha256:0aa94a726b874092521e0ce62d3cf9d47daad1696389155ce59a9fc1ec3a679d` 的revision标签绑定功能提交da829ac；实际运行binary为已验收的 `0bc78c3b43321d4b22c00283a2a4032415162966d81a6879a8555da488a5bdd3`。本轮提交和部署没有修改final09已验收后端或前端源码。
+- 公网health、首页、登录页和真实管理员登录均200；308条迁移，1管理员/0上游账号/0 API Key，注册403，6个JS/CSS资源哈希匹配。新项目三个容器重启后数据库设置、Redis/app持久标记、配置与登录保持。
+- Caddy仅追加test→8093并平滑reload，原开发域名路由及PID保持；域名A原已指向本机，无DNS变更。可信HTTPS和域名校验通过，HTTP308跳转HTTPS；Let’s Encrypt证书有效至2026-12-27，由既有Caddy自动续期机制管理。
+- 新管理员尚需本人首次登录确认平台声明；只读调度策略/统计接口实测返回423 ADMIN_COMPLIANCE_ACK_REQUIRED，未绕过或代用户确认。注册关闭及测试站点名称通过新库运维初始化设置；默认legacy，不自动添加上游、策略或模型阈值。
+- 凭据仅保存在本机 `/xy2/deployments/test-aiaimax/.env`（0600、父目录0700），不写入Git/PR/记忆。运维、停启及回退见该目录README.md、DEPLOYMENT.json、evidence和proxy证据。现场回退仅在显式执行时下线测试站，本轮只在副本验证代理回滚；原开发服务继续运行。
+- 当前四角色仍固定于 `/xy2/artifacts/scheduling-optimization-20260928`；部署前final09归档已保存到pr-test-deploy-20260928/pre-pr-final09。最终当前文档树的三态证明使用 `pr-test-final-01` 身份，原五门禁继续绑定final09不重复冒称新执行；当前汇总以FINAL_DELIVERY.json及PR_TEST_DEPLOY_RESULT.json为准。
 
-### 可控调度故障恢复优化候选（2026-09-28，本地验收通过，未部署）
+### 可控调度实现与本地验收基线（2026-09-28，final09部署前记录）
 
 - 原发布源码 `/xy2/release-0.2.0` 保持原字节，修改位于 `/xy2/artifacts/scheduling-optimization-20260928/work` 的 `feat/scheduling-reliability-20260928`。默认仍为 legacy；controlled 尚未上线，没有推送、合并或真实付费上游调用。
 - 完成终态与故障意图原子持久化、UNKNOWN 权威占位及补偿；可用性与首字延迟证据分离、渐进冷启动恢复；显式共享故障域、身份修订隔离、统一尝试预算及管理恢复入口。
@@ -353,18 +358,14 @@ Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本
 
 ## 进行中的工作
 
-### 20260928-scheduling-pr-test-deploy — 提交 PR 与隔离测试部署进行中
-- 范围：提交已验收调度候选、推送feat/scheduling-reliability-20260928并创建main目标PR；完成后启动test.aiaimax.cyou独立实例，验证HTTPS、登录、308条迁移和数据库/缓存/存储隔离。root独占Git/记忆/四角色，test_deploy负责compose，test_domain负责新增Caddy站点。所有现有开发容器、数据、域名配置保留。
+### 20260928-scheduling-pr-test-deploy — PR创建与独立测试部署已完成
+- PR #71开放，test.aiaimax.cyou已完成隔离部署、公网HTTPS/真实登录/重启持久性/开发服务未变检查；首次管理员声明由用户本人确认。当前源码交付和对应head远端CI结果由pr-test-deploy-20260928保存，四角色沿用原路径。
 
-### 20260928-scheduling-review-fixes — R1/R2/R3/R4 修正进行中
-- 用户明确授权修复本轮复审问题；在现有候选处理非流式协议确认、错误正文 D、删除账号补偿饥饿及待处理局部索引。原发布源码保持不变，预修订候选归档保留于 review-fixes-20260928。两组并行修复，root 交叉审查、回归与四角色收口；不推送或上线。
-- 续轮流程复审发现旧归档/complete 状态未反映当前修复、focused 未包含 migrations、全量 unit 可写运行缺少持久退出码。当前不能据此交付：修正 runner 的隔离可写副本、源摘要绑定、启动/结束落盘及最终三态重验。259–261 为未发布新增迁移，正确摘要按 strings.TrimSpace；此前 raw 摘要解释撤回。
-- 完整 race 仅 allocation 复杂度断言失败（large=2559），没有 DATA RACE 报告；同源码同输入单独 10 次通过。保持原分配阈值和功能断言，改用仅运行该测试的子进程隔离进程级 Mallocs 干扰，之后必须重新跑完整 gate。独立复审还发现 OAuth/Direct Images 缺 finish、部分适配器 defer 顺序反转及 images/embeddings 空对象误判成功，正在补真实 controlled 回归。
+### 20260928-scheduling-review-fixes — 已完成（final09）
+- 本轮确认的协议、补偿、并发及故障范围问题已修复；全量unit、六包race、lint/build/embed、29项关键回归及升级回滚全部通过。详细失败历史与后续闭环保留在操作日志及review-fixes-20260928，不再作为未完成任务重复运行。
 
-### 20260928-scheduling-reliability — 代码与隔离验收完成，待上线评审
-- 用户授权按2026-09-28审查方案实施并实时检索辅助开发。源 `/xy2/release-0.2.0` 保持不变，候选 `/xy2/artifacts/scheduling-optimization-20260928/work`。A结算、B恢复、C故障域与错误分类、D配置和E隔离故障演练已落地；四角色及执行账本固定于同一 artifact 目录。不推送、合并或生产部署。
-- 已记录原始 HEAD 与逐文件 hash；原版真实 PG 终态意图类型错误 exit 1。本轮仍需以最终三态归档和原始源码逐文件校验为交付收尾，不把历史记录当成新候选验证。
-
+### 20260928-scheduling-reliability — 代码、PR与隔离测试部署完成
+- 已验收实现经PR #71提交，独立测试环境已上线；原发布源码保持不变，生产部署和真实上游业务调用未执行。当前交接以本文顶部及最终artifact记录为准。
 
 - `20260927-controlled-scheduling-postcommit-review`：先提交实现并完成独立复审，4项P1/2项P2有实证，业务修复尚未执行；完整报告见 post-commit-review-20260927/REVIEW.md。原源码保持，未推送或部署。
 
@@ -1253,3 +1254,10 @@ pnpm --dir frontend run build
 - 07完整race发现 Account 派生缓存字段真实读写竞争；新增32协程并发读取/值复制回归在基线失败、修复通过。主执行者移除模型与请求头的可变惰性缓存，保留既有解析规则；组合getter微基准由约0.30us变为0.72–0.79us、每次1024B分配，选择保持共享账号对象只读，未外推生产吞吐。
 - 错误正文D的断言与持久化结算分开：上游实际取消仍必须D+350ms内发生，后续已存在的五秒结算上下文另行有界检查。隔离10次时间线观测完整保存；没有通过放宽上游截止时间掩盖超时。
 - 四角色路径保持不变，重新封装与全新三态证明需等待当前候选全部门禁完成。此前角色里的BASELINE/旧MODIFIED/ROLLBACK仅作历史证据，不代表新修复已验收。
+
+### 2026-09-28 — 20260928-scheduling-pr-test-deploy — 提交PR与本机独立测试
+
+- 用户明确授权先提交/推送PR，再本机部署test.aiaimax.cyou。已实际提交da829ac、正常push并创建PR #71，随后才启动新compose项目和发布Caddy站点；没有merge或替换开发服务。功能head的18项CI实际SUCCESS，交接文档另行正常提交，不将旧head结果冒称新head检查。
+- 复用验收binary，独立PG/Redis/网络/卷/随机密钥与fresh库；新站公网登录/健康/静态资源、308迁移、注册关闭、重启持久性和15个开发容器不变均有实际证据。新管理员声明423按真实结果保留，不代用户确认，也不把受声明门保护的调度GET称为200。
+- DNS原已正确；Caddy追加独立站点并reload，开发路由与PID保持。代理配置副本回滚恢复baseline原字节，现场测试站保持运行。配置、凭据和运维脚本位于/xy2/deployments/test-aiaimax；秘密未写入Git或PR。
+- 四角色继续沿用原路径；部署前归档保留。最新文档树通过新的pr-test-final-01同输入源码事务，当前归档与原final09被测后端逐文件核对，部署/PR/CI及四角色重开结果见PR_TEST_DEPLOY_RESULT.json。
