@@ -686,7 +686,8 @@ type GatewayFailureReason string
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
 type UpstreamFailoverError struct {
-	PreDispatchSelectionInvalidated bool // Candidate lost admission before any upstream call.
+	cause                           error // Original read failure, never included in client-facing text.
+	PreDispatchSelectionInvalidated bool  // Candidate lost admission before any upstream call.
 	StatusCode                      int
 	ResponseBody                    []byte        // 上游响应体，用于错误透传规则匹配
 	ResponseHeaders                 http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
@@ -714,6 +715,13 @@ func (e *UpstreamFailoverError) Error() string {
 
 func (e *UpstreamFailoverError) ShouldRetryNextAccount() bool {
 	return e != nil && e.NextAccountAction != NextAccountStop
+}
+
+func (e *UpstreamFailoverError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 func (e *UpstreamFailoverError) IsCredentialFailure() bool {

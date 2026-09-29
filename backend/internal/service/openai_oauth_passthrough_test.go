@@ -1928,6 +1928,7 @@ func TestOpenAIGatewayService_OpenAIPassthrough_CompactNetworkErrorsTriggerFailo
 		resp           *http.Response
 		err            error
 		expectFailover bool
+		owner          bool
 	}{
 		{
 			name:           "request_error",
@@ -1941,7 +1942,17 @@ func TestOpenAIGatewayService_OpenAIPassthrough_CompactNetworkErrorsTriggerFailo
 				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact"}},
 				Body:       passthroughErrReadCloser{err: io.ErrUnexpectedEOF},
 			},
-			expectFailover: false,
+			// A stateless compact request can retry before any response is written.
+			expectFailover: true,
+		},
+		{
+			name: "read_error_owned",
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       passthroughErrReadCloser{err: io.ErrUnexpectedEOF},
+			},
+			owner: true,
 		},
 	}
 
@@ -1951,6 +1962,12 @@ func TestOpenAIGatewayService_OpenAIPassthrough_CompactNetworkErrorsTriggerFailo
 			c, _ := gin.CreateTestContext(rec)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(nil))
 			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+			ctx := context.Background()
+			if tt.owner {
+				ctx = NewControlledRequestContext(ctx, "responses")
+				controlledRequest(ctx).owner = true
+			}
+			c.Request = c.Request.WithContext(ctx)
 
 			upstream := &httpUpstreamRecorder{resp: tt.resp, err: tt.err}
 			svc := &OpenAIGatewayService{
@@ -1971,13 +1988,16 @@ func TestOpenAIGatewayService_OpenAIPassthrough_CompactNetworkErrorsTriggerFailo
 			}
 			body := []byte(`{"model":"gpt-5.5","instructions":"local-test-instructions","input":[{"type":"text","text":"compact me"}]}`)
 
-			_, err := svc.Forward(context.Background(), c, account, body)
+			_, err := svc.Forward(ctx, c, account, body)
 			require.Error(t, err)
 			var failoverErr *UpstreamFailoverError
 			if tt.expectFailover {
 				require.ErrorAs(t, err, &failoverErr)
 				require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 				require.False(t, c.Writer.Written(), "compact 网络错误应交给外层 failover，而不是直接写回客户端")
+				if tt.resp != nil {
+					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+				}
 			} else {
 				require.False(t, errors.As(err, &failoverErr))
 				require.ErrorIs(t, err, io.ErrUnexpectedEOF)

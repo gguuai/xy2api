@@ -970,7 +970,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
-		return OpenAIUsage{}, 0, nil, err
+		return OpenAIUsage{}, 0, nil, nonstreamReadError(ctx, resp, err)
 	}
 	if err := validateControlledNonstreamResponse(resp, body, "images"); err != nil {
 		return OpenAIUsage{}, 0, nil, err

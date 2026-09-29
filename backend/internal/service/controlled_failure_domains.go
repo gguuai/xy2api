@@ -172,6 +172,36 @@ func (d *controlledDispatch) observeFailureResponse(response *http.Response) {
 
 type failureReadError struct{ err error }
 
+// Called with d.mu held, only for a validated failure frame. Protocol evidence
+// is local to this account/model: an SSE code alone cannot prove shared scope.
+func (d *controlledDispatch) observeProtocolFailureLocked(v gjson.Result) {
+	if d.status < http.StatusOK || d.status >= http.StatusMultipleChoices {
+		return
+	}
+	kind, status := v.Get("type").String(), v.Get("response.status").String()
+	if kind != "error" && kind != "response.failed" && status != "failed" {
+		return
+	}
+	detail := v.Get("error")
+	if kind == "response.failed" || status == "failed" {
+		detail = v.Get("response.error")
+	}
+	if !detail.IsObject() {
+		return
+	}
+	code := detail.Get("code")
+	if !code.Exists() || code.Type == gjson.Null || code.String() == "" {
+		code = detail.Get("type")
+	}
+	if code.Type != gjson.String {
+		return
+	}
+	switch code.String() {
+	case "server_error", "internal_error", "internal_server_error", "overloaded_error", "service_unavailable":
+		d.failureEvidence = scheduling.FailureEvidence{Status: d.status, Code: code.String(), Trusted: true, ProtocolFailure: true, ReplaySafe: true}
+	}
+}
+
 func (r *failureReadError) Read([]byte) (int, error) {
 	err := r.err
 	if err == nil {

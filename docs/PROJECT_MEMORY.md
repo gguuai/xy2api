@@ -4,6 +4,14 @@
 
 ## 当前交接状态
 
+### v0.2.1 可靠性修复验证完成，待本地提交审计与 GitHub 认证（2026-09-29）
+
+- 当前为独立修复副本 /opt/xy2api-v021-fix-20260929-anp5W2/work，分支 fix/v021-gateway-reliability-20260929，固定官方基线 e17664144。用户授权纯官方 D0～D4/G1、本地提交、推送 liulixin-lex/xy2api 和创建 PR，由维护者决定合并；不合并多组/活动二开，不自行合并 PR、发布或部署。
+- 已修 XY-001/002/007/008/009：非递归终端发送、13 条同步非流式路径安全读取回退、可信协议失败的 PG 账号模型冷却、明确未发送的 pending 判定；保留预算、deadline、owner、语义输出后禁重放及普通 30 秒冷却。18 个生产 Go 文件、7 个测试文件和修复记录为本轮差异，原前端/迁移/版本/provenance 不变。
+- 验证：全后端首轮 61 包通过、service 两项测试断言修正后整包复验通过（8022 顶层/7950 子项，11 skip）；首轮失败保留。隔离 repository/migrations 701/1206、handler 三轮 race 54/60、scheduling race 160/113、service 三轮关键 race 21/237、广泛守卫 race 104/555 均通过且无数据竞争。两轮 lint 均 0 issues，构建和 14 项同步工具测试通过；clean-tree 来源审计待提交后执行，不能称已完成。
+- 报告 docs/V021_RELIABILITY_FIX.md；外部父目录含 VALIDATION.json、PR_BODY.md 和全部原始日志。真实供应商、部分外部依赖/opt-in 跳过、浏览器/功能整合/生产数据及部署边界明确保留。三临时容器和 tmpfs 合成数据已按 ID/标签清理，源文件和日志保留，其他服务未操作。
+- 推送预检仍因 HTTPS 无登录身份退出 128；用户提供邮箱不能代替登录，未写入文档或冒用身份。下一步完成本地提交和正常来源审计；待用户在服务器配置相应 GitHub 身份后推送此分支并创建 PR，不复用其他项目密钥。下方历史发布记录不是本轮修复已发布的证据。
+
 ### 0.2.1 远端推送与正式发布（2026-09-29，已完成）
 
 - 核实时间：2026-09-29T17:00:48.802710+00:00。用户授权的远端推送与 0.2.1 正式发布已完成；PR #71 常规合并提交和不可移动的 v0.2.1 均为 857495c876e3fa33df026d058d5600a099183776，Release 工作流 36598436071 成功。发布入口：https://github.com/liulixin-lex/xy2api/releases/tag/v0.2.1。
@@ -407,6 +415,8 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
+- `20260929-v021-reliability-fix`：纯官方四缺陷及覆盖修复、unit/隔离集成/race/lint/build 已验证，待本地提交后正常来源审计。GitHub HTTPS 登录缺失，推送/PR 阻塞；用户仅提供邮箱，不是授权凭据。仅此修复分支可提交；多组/活动整合、远端合并、发布与部署仍暂停。外部父目录保存 PR 草稿、验证统计和失败日志。
 
 
 ### 20260929-dual-scheduling — 实施中
@@ -1390,3 +1400,13 @@ pnpm --dir frontend run build
 - 修改文件：本后继交接仅修改 docs/PROJECT_MEMORY.md 顶部本轮状态、移除本轮进行中条目并追加本日志；其他 Agent 条目与所有历史日志保持。纯文档分支正常推送、PR、保护检查和合并结果统一记录在 release-0.2.1/handoff-closeout/RESULT.json，不触发新 Release。
 - 卡点/风险：没有待执行发布动作；首轮宿主状态变化未确定起因，不能据后续 PASS 抹去；没有真实供应商、生产首字或计费取消保证。本次发布未替换测试站或生产服务；测试站仍使用此前本地验收镜像。
 - 下一步：最终交付见 /xy2/artifacts/scheduling-optimization-20260928/release-0.2.1/FINAL_DELIVERY.json。后续 Agent 先读该记录及本次纯文档 PR 结果，按对应 HEAD 重新核实远端状态，避免重复发版或误移动标签。
+
+### 2026-09-29 — 20260929-v021-reliability-fix — 纯官方修复与本地验证
+
+- 用户授权按修复开发文档 D0～D4/G1 实施，追加授权统一提交官方 PR；建立独立分支固定 e17664144，保留 /opt/xy2api 的 feat/dynamic-promotion/43437e224、既有二开/文档及两个旧准备/证据副本，不恢复被暂停的合并。
+- 实际生产变更：终端发送函数切断 OpenAI 调度旁路递归；统一非流式可恢复读取分类，13 条同步适配路径在写响应前交给原 handler；验证的服务端协议错误写入既有失败域/身份 fence/PG 冷却；取消或超时重命名 outcome 前保留未发送证据，并统一 terminal intent/settle 的 pending。没有重写调度器、放宽预算/降级阈值或 owner/语义后禁重放，不扩展异步和 WS 重放，不修历史数据库。
+- 新增4个正式测试文件、更新3个既有测试：有界子进程、真实本机截断/拨号、独立 PG/Redis、协议正负例、取消/预算/owner/确认幂等和真实认证 Gin handler；handler 仓库为合成 stub、simple 模式隔离计费，不能称全数据库认证/付费上游端到端。
+- 原始诊断失败保留；相邻七条读取故障复现后修复，Codex direct images 已有外层转换，错误层级断言排除但不报为新增缺陷。新测试转义错误、Images 方法夹具错误、race 二进制错误 cwd 和 python 命令缺失均保留日志。首次完整 unit 的 buffered_sse 夹具层级及 compact 旧契约断言经定点修正，增强强 owner 对照后重跑整个 service，而非只删失败断言。
+- 结果：其余61包首轮 PASS，加 service 全量复验 PASS；隔离 repository/migrations、handler/scheduling/service 各 race 范围通过，0 data race。全部数字、跳过名称/原因和日志 SHA 见父目录 VALIDATION.json，11 个 service skip、41 个初轮 unit skip 不隐瞒；调度三个 Redis opt-in 已在 race 实跑。两轮静态检查0 issues，后端构建/version、14工具测试通过。未改前端/迁移/版本/provenance；来源审计提交前因 dirty 正确拒绝，待干净提交后重跑。
+- 收尾资源：仅移除本轮标签 xy2api.task=v021-fix-anp5w2 的三个临时容器及 tmpfs 合成数据，完整 ID/名称确认、标签无残留；日志/二进制和源码保留。无真实付费调用、站点库、测试站/其他服务、发版或远端合并操作。
+- 阻塞：HTTPS push --dry-run 退出128且未认证。邮箱不能替代凭据；不使用其他项目私钥。准备本地提交和 PR_BODY.md；GitHub 未推送/未创建PR。用户配置身份后复核远端和分支再推送、创建PR，维护者自行决定合并。收尾文档首次工具包装因反引号语法错误未执行，纠正后通过 apply_patch 写入，没有部分覆盖。

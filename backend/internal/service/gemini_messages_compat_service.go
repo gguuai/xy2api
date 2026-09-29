@@ -2198,6 +2198,11 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
+		classified := nonstreamReadError(c.Request.Context(), resp, err)
+		var failover *UpstreamFailoverError
+		if errors.As(classified, &failover) {
+			return nil, classified
+		}
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
 	}
 	if err := validateControlledNonstreamResponse(resp, body, "gemini"); err != nil {
@@ -2877,7 +2882,7 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
-		return nil, err
+		return nil, nonstreamReadError(c.Request.Context(), resp, err)
 	}
 	if err := validateControlledNonstreamResponse(resp, respBody, "gemini"); err != nil {
 		return nil, err

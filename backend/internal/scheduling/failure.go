@@ -25,6 +25,7 @@ type FailureEvidence struct {
 	Status               int
 	Code                 string
 	Trusted              bool
+	ProtocolFailure      bool // Validated provider server error inside a successful HTTP response.
 	GlobalInput          bool
 	Capability           bool
 	ClientCancelled      bool
@@ -143,7 +144,7 @@ func ClassifyFailure(e FailureEvidence, a FailureAdmission, now time.Time) Failu
 	case e.Trusted && e.Status == 429:
 		d.Class, d.Reason, d.Effect, d.Scope, d.Key = "rate_limit", "scope_unknown", "cooldown", "account_model", a.ModelKey()
 		d.Until = now.Add(30 * time.Second)
-	case e.Trusted && e.Status >= 500:
+	case e.Trusted && (e.Status >= 500 || e.ProtocolFailure):
 		d.Class, d.Reason, d.Effect, d.Scope, d.Key = "upstream_failure", "local_upstream_failure", "observe_failure", "account_model", a.ModelKey()
 	case e.NotSent:
 		d.Class, d.Reason, d.Effect, d.Scope, d.Key = "transport", "proven_not_sent", "observe_failure", "account_model", a.ModelKey()

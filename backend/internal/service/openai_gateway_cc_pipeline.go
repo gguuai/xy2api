@@ -345,6 +345,11 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	defer finishControlledNonstreamResponse(resp, &retErr)
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		classified := nonstreamReadError(c.Request.Context(), resp, err)
+		var failover *UpstreamFailoverError
+		if errors.As(classified, &failover) {
+			return nil, OpenAIUsage{}, classified
+		}
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}

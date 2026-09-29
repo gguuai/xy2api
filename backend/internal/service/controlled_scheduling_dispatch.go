@@ -486,6 +486,7 @@ func (d *controlledDispatch) ObserveFrame(frame []byte) {
 				d.excluded = true
 			} else {
 				d.upstreamFailure = true
+				d.observeProtocolFailureLocked(v)
 			}
 		}
 	}
@@ -569,6 +570,9 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			d.timer.Stop()
 		}
 		sent, semantic, answer, firstEvent, started := d.sent, d.semantic, d.answer, d.firstEvent, d.started
+		// Cancellation/timeout may rename the outcome below, but cannot erase
+		// transport proof that no request was sent.
+		provenNotSent := !sent || outcome == "not_sent"
 		timeout, clipped, upstreamFailure, explicitExcluded, terminal, retryAfter, status := d.timeout, d.clipped, d.upstreamFailure, d.excluded, d.terminal, d.retryAfter, d.status
 		semanticObservable := d.semanticObservable
 		d.mu.Unlock()
@@ -618,14 +622,15 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 		fd := d.classifyFailureDomains(outcome, err)
 		if knownTerminal {
 			certainty := "remote_terminal"
-			if !sent || outcome == "not_sent" {
+			if provenNotSent {
 				certainty = "proven_not_sent"
 			}
+			usagePending := sent && status < 400 && certainty != "proven_not_sent"
 			var intentErr error
 			if d.ticket.Failure != nil {
-				intentErr = d.service.Store.RecordTerminalFailureIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400, fd, completed)
+				intentErr = d.service.Store.RecordTerminalFailureIntent(ctx, d.ticket.TicketID, outcome, certainty, usagePending, fd, completed)
 			} else {
-				intentErr = d.service.Store.RecordTerminalIntent(ctx, d.ticket.TicketID, outcome, certainty, sent && status < 400)
+				intentErr = d.service.Store.RecordTerminalIntent(ctx, d.ticket.TicketID, outcome, certainty, usagePending)
 			}
 			if intentErr != nil {
 				excluded = true
@@ -633,7 +638,7 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 				if e := d.service.Store.MarkAttemptUnknown(ctx, d.ticket.TicketID); e != nil {
 					slog.Warn("scheduling unknown persistence pending", "attempt_id", d.ticket.TicketID, "error", e)
 				}
-			} else if e := d.service.Store.SettleAttempt(ctx, d.ticket.TicketID, outcome, sent && status < 400); e != nil {
+			} else if e := d.service.Store.SettleAttempt(ctx, d.ticket.TicketID, outcome, usagePending); e != nil {
 				slog.Warn("scheduling settlement pending", "attempt_id", d.ticket.TicketID, "error", e)
 			}
 		} else {

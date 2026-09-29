@@ -2315,7 +2315,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
-		return nil, err
+		return nil, nonstreamReadError(ctx, resp, err)
 	}
 	if err := validateControlledNonstreamResponse(resp, body, "responses"); err != nil {
 		return nil, err

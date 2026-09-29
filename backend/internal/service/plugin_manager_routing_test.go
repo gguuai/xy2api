@@ -82,7 +82,7 @@ func TestOpenAIGatewayPluginRoutingPreservesAPIKeyAndFailsClosedForOAuth(t *test
 	manager := &PluginManager{}
 	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "测试不可用"})
 	upstream := &pluginRoutingHTTPUpstream{}
-	service := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream}
+	service := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream, controlledScheduling: &ControlledSchedulingService{}}
 
 	apiKeyRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
 	require.NoError(t, err)

@@ -4,14 +4,52 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tidwall/gjson"
 )
 
 type controlledBufferedResponseContextKey struct{}
+
+// nonstreamReadError classifies only transport read failures before an adapter
+// has accepted a response. Account selection still enforces its own admission
+// and retry budget; this helper never spends or resets either.
+func nonstreamReadError(ctx context.Context, resp *http.Response, err error) error {
+	if err == nil || ctx == nil || ctx.Err() != nil || resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+		return err
+	}
+	var transportErr net.Error
+	retryable := errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.As(err, &transportErr)
+	if !retryable {
+		return err
+	}
+	if r := controlledRequest(ctx); r != nil {
+		r.mu.Lock()
+		blocked := !r.ReplaySafe || r.owner || !r.semanticAt.IsZero()
+		ledger, limit := r.Ledger, r.Policy.Retry.MaxAttempts
+		r.mu.Unlock()
+		if blocked {
+			return err
+		}
+		if ledger != nil {
+			snapshot := ledger.Snapshot()
+			if snapshot.Committed || (!snapshot.Deadline.IsZero() && !time.Now().Before(snapshot.Deadline)) ||
+				(limit > 0 && snapshot.Attempts >= limit) {
+				return err
+			}
+		}
+	}
+	return &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ClientMessage: "failed to read upstream response", cause: err}
+}
 
 // Buffered adapters own acceptance even when their upstream wire format is SSE.
 // Mark this before dispatch: transport prefetch must not settle or cap an image
@@ -85,6 +123,7 @@ func observeControlledBufferedFailure(resp *http.Response, payload []byte) {
 		b.dispatch.excluded = true
 	} else {
 		b.dispatch.upstreamFailure = true
+		b.dispatch.observeProtocolFailureLocked(v)
 	}
 	b.dispatch.mu.Unlock()
 	if requestFailure {

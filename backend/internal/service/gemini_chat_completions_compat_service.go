@@ -454,7 +454,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	defer finishControlledNonstreamResponse(resp, &retErr)
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
-		return nil, err
+		return nil, nonstreamReadError(c.Request.Context(), resp, err)
 	}
 	if err := validateControlledNonstreamResponse(resp, respBody, "gemini"); err != nil {
 		return nil, err

@@ -857,7 +857,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
-		return nil, err
+		return nil, nonstreamReadError(ctx, resp, err)
 	}
 	if err := validateControlledNonstreamResponse(resp, body, "messages"); err != nil {
 		return nil, err
