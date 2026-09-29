@@ -6,7 +6,7 @@
 
 本次仅修复官方版本的四类可靠性缺陷及相关测试缺口。不包含动态优惠、多分组密钥、管理界面或新版功能整合，不修改版本、历史迁移、调度默认值或数据库数据。不部署、不调用真实付费上游。修复后由维护者审查 PR，不能把本地通过当作已合并、已发布或已上线。
 
-当前：四类缺陷及测试缺口已修复，后端 unit、关键 race、隔离存储集成、最终 lint 和构建验证完成；干净提交后的来源审计待执行。尚未推送或创建 PR。服务器 HTTPS 推送预检因缺少登录身份退出 128；邮箱不是 GitHub 登录凭据，没有借用其他项目的密钥。
+当前：D0～D4/G1 本地完成，修复提交 94ce2793177eadc595c2c6f6ef6207d222e4510f。后端 unit、关键 race、隔离存储集成、最终 lint、构建及干净提交后的来源审计通过。尚未推送或创建 PR。服务器 HTTPS 推送预检因缺少登录身份退出 128；邮箱不是 GitHub 登录凭据，没有借用其他项目的密钥。PR 草稿保存在候选父目录 PR_BODY.md。
 
 ## 问题与实际修改
 
@@ -67,7 +67,7 @@ Codex direct images 已有独立的读取错误包装及外层转换协议；初
 | backend-lint.log / backend-lint-final.log | 两轮均 exit 0、0 issues，后者在最后一次测试源码修改后执行 |
 | backend-build.log | exit 0；后端构建及版本运行通过，非正式发布制品 |
 | sync-tests-final.log | exit 0，14 项同步工具测试通过；此前系统无 python，改用 python3，原失败日志保留 |
-| sync-audit-final.log | 提交前按规则拒绝 dirty 工作树；提交后正常重跑，不绕过门禁 |
+| sync-audit-final.log / sync-audit-clean.log | 前者提交前按规则拒绝 dirty 工作树；后者在修复提交后 exit 0，upstream sync audit passed，没有绕过门禁 |
 | VALIDATION.json | 外部日志统计与 SHA256 索引；次数是测试调用次数，三轮结果不冒称三倍独立用例 |
 
 ### 全量回归发现的测试修正
