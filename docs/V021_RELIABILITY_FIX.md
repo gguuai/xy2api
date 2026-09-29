@@ -6,7 +6,9 @@
 
 本次仅修复官方版本的四类可靠性缺陷及相关测试缺口。不包含动态优惠、多分组密钥、管理界面或新版功能整合，不修改版本、历史迁移、调度默认值或数据库数据。不部署、不调用真实付费上游。修复后由维护者审查 PR，不能把本地通过当作已合并、已发布或已上线。
 
-当前：D0～D4/G1 本地完成，修复提交 94ce2793177eadc595c2c6f6ef6207d222e4510f。后端 unit、关键 race、隔离存储集成、最终 lint、构建及干净提交后的来源审计通过。尚未推送或创建 PR。服务器 HTTPS 推送预检因缺少登录身份退出 128；邮箱不是 GitHub 登录凭据，没有借用其他项目的密钥。PR 草稿保存在候选父目录 PR_BODY.md。
+当前：D0～D4/G1 本地完成，修复提交 94ce2793177eadc595c2c6f6ef6207d222e4510f。后端 unit、关键 race、隔离存储集成、最终 lint、构建及干净提交后的来源审计通过。用户已配置 GitHub 登录并授权提交修复 PR；通过个人 fork 提交至官方 main，不直推官方主线。此前缺认证的失败预检保留为历史，不代表当前认证状态。最终 PR 状态见项目记忆与 PR 页面。
+
+随附文档：[检查问题报告](V021_ISSUE_SUMMARY.md) · [修复开发文档](V021_REMEDIATION_PLAN.md) · [问题与变更台账](ISSUES_AND_CHANGES.md)。均为本次修复提交版，不包含此前功能升级的开发方案或代码。
 
 ## 问题与实际修改
 
@@ -91,7 +93,7 @@ Codex direct images 已有独立的读取错误包装及外层转换协议；初
 - 核心：openai_plugin_transport.go、controlled_nonstream_response.go、controlled_failure_domains.go、controlled_scheduling_dispatch.go、gateway_service.go、scheduling/failure.go。
 - 接入：十二个网关源文件承载上述十三条同步非流式路径（Gemini 兼容文件包含两条）。代码差异只替换读取错误分类或在写错误前交给已有 failover。
 - 测试：新增四个正式测试文件，更新 failure_test.go、plugin_manager_routing_test.go、openai_oauth_passthrough_test.go；不删除已有测试文件。
-- 文档：本记录、项目记忆及本文件的精确 .gitignore 白名单。不改变 frontend、backend/migrations、UPSTREAM_BASE.json、同步 policy、VERSION 或 SUB2API_COMPAT_VERSION。
+- 文档：本记录、问题检查报告、修复开发文档、问题与变更台账、项目记忆及相应精确 .gitignore 白名单。不改变 frontend、backend/migrations、UPSTREAM_BASE.json、同步 policy、VERSION 或 SUB2API_COMPAT_VERSION。
 
 定向命令（在 backend 中执行；环境变量须指向独立测试实例）：
 
