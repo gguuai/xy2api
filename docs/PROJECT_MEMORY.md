@@ -4,13 +4,16 @@
 
 ## 当前交接状态
 
-### 0.2.1 远端推送与正式发布（2026-09-29，进行中）
+### 0.2.1 远端推送与正式发布（2026-09-29，已完成）
 
-- 用户已明确授权“现在进行远端推送和发版0.2.1”。发布副本为 /xy2/release-0.2.1（release/0.2.1），从已冻结、已部署验收的 one-click 候选复制，原源码和测试站保持。
-- 远端 origin 为 liulixin-lex/xy2api；继续现有 PR #71，正常快进推送、保护检查通过后常规合并，再创建不可移动的 annotated v0.2.1 并使用既有 Release 工作流。
-- 只晋级产品 VERSION 与 UPSTREAM_BASE.json 的 xy2api_version；Sub2API 兼容版本 0.2.8 保持。前端 package.json 的 1.0.0 是包元数据，不作为产品版本。
-- 测试站已于 2026-09-29 15:25 UTC 实际替换为一键调度镜像 b86d18e81e13，313 条迁移；本机/公网与独立复核通过，保留 controlled/version2。下方冻结记录的“未部署”是当时历史事实，非当前状态。
-- 发布执行与最终 SHA、CI、附件、GHCR 及角色证明写入 /xy2/artifacts/scheduling-optimization-20260928/release-0.2.1；复用同一四角色并保留发布前副本。正式标签未创建前不宣称已发布。
+- 核实时间：2026-09-29T17:00:48.802710+00:00。用户授权的远端推送与 0.2.1 正式发布已完成；PR #71 常规合并提交和不可移动的 v0.2.1 均为 857495c876e3fa33df026d058d5600a099183776，Release 工作流 36598436071 成功。发布入口：https://github.com/liulixin-lex/xy2api/releases/tag/v0.2.1。
+- 冻结发布副本 /xy2/release-0.2.1 保持干净 56cf99e89caad9aa72bfa1476f42009807282aaf，与合并/tag 的树完全一致（acf04a2c269ebd098d63ae9153c6e76f7499678c）。本次交接仅在独立 /xy2/release-0.2.1-handoff 的 docs/release-0.2.1-closeout 更新本记忆，不修改冻结源码、历史标签、业务代码或版本元数据，不创建新 Release。
+- PR 最终 head 的保护检查通过；正式合并提交对应 main 与 v0.2.1 的 CI、Security Scan 全部成功，检查按各自 head 绑定。产品版本为 0.2.1，Sub2API 兼容版本保持 0.2.8；前端包元数据 1.0.0 不作为产品版本。
+- 五平台发布包（Linux/Darwin amd64、arm64 与 Windows amd64）的 checksum 全通过，Linux 二进制版本和提交匹配。GHCR 0.2.1 为 Linux amd64/arm64，清单 sha256:10f22fca7b87276000aa87a07585eccd16a3e09e0909b93758f2d97beb5fffb2，latest、0.2、0 别名一致。
+- 正式发布镜像实际执行 0.2.0 的 305 条迁移基线 → 0.2.1 的 313 条 → 恢复备份回退 305 条，以及全新 313 条；四阶段健康、登录与嵌入页面资源均 200。双模式、一键账号开关、六类错误输入 400、退役入口 410 和旧单账号暂停迁移均已验证；历史 305 条 SQL 字节不变。
+- 第一轮 release-021-final-01 的四个功能阶段均通过，但宿主容器状态严格比较失败，整轮仍保留 **FAIL**，变化起因未定，不作成功改写。不修改脚本的 release-021-smoke-retry-02 实际 **PASS**，existing_containers_unchanged=true，容器、卷、网络清理全部为 true；未进行真实上游推理或计费验证。
+- 固定四角色仍为 /xy2/artifacts/scheduling-optimization-20260928/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}。release-021-final-01 源码事务同输入 BASELINE/MODIFIED/ROLLBACK 实际退出 1/0/1，原行为复现、新功能、补丁重建、恢复原哈希和恢复后重新应用全部验证；旧四角色完整私有保存。ROLLBACK.sh 仅恢复离线源码副本，不代替在线数据库回退。
+- 最终汇总与所有命令证据见 /xy2/artifacts/scheduling-optimization-20260928/release-0.2.1/FINAL_DELIVERY.json；本记忆的纯文档 PR/检查/合并交接见同目录 handoff-closeout/RESULT.json。冻结源与原 one-click 4547 文件保持；本次发布未执行生产部署或测试站替换，测试站延续此前已验收的本地 b86d18e81e13 镜像，不能把正式 GHCR 发布当作该站已换镜像。
 
 
 ### 一键账号调度简化（2026-09-29，源码冻结与交付验收）
@@ -405,7 +408,6 @@ Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本
 
 ## 进行中的工作
 
-- 20260929-release-0.2.1：根代理负责整理已验收源码、晋级 0.2.1、快进更新 PR #71、门禁/合并/标签/Release 和远端制品验收；原冻结工作树与在线测试站不改。
 
 ### 20260929-dual-scheduling — 实施中
 - 按用户最新要求，系统设置提供 Sub2API 原版调度与可控智能调度两种模式，运行路径和界面分别隔离；保留已有分组账号优先级/权重，不增加逐模型配置。
@@ -1378,3 +1380,13 @@ pnpm --dir frontend run build
 - 4547 个已验收源码文件完整复制到 release/0.2.1；仅 VERSION、provenance 产品版本与本轮记忆不同于冻结实现；历史兼容0.2.8和305条正式0.2.0旧SQL不改。
 - 独立 release_021_review 确认沿用既有完整 GoReleaser 工作流；release_021_transaction 负责同一四角色三态与回退；release_021_artifacts 负责正式附件SHA、GHCR双架构、305→313→305及新装313隔离验收。子任务只在外部证据目录写入，不更改发布业务代码或在线测试站。
 - 本轮工具14测试和diff检查通过。首次来源审计因待提交工作树非干净而明确exit1；提交后在干净树重跑，不绕过审计。最终远端状态、标签及工作流结果保存在本轮STATE与最终报告，不能把已验收旧head检查冒称本轮CI。
+
+### 2026-09-29T17:00:48.802710+00:00 — 20260929-release-0.2.1 — 正式发布与纯文档交接
+
+- 请求/目标：执行用户授权的远端推送、0.2.1 正式发布和仓库交接收口；原冻结发布副本与历史标签保持不变。
+- 开始状态：发布候选 release/0.2.1 的 56cf99e89caad9aa72bfa1476f42009807282aaf 已完整验收；PR #71 在所需检查通过后常规合并，v0.2.1 固定 857495c876e3fa33df026d058d5600a099183776，二者源码树一致。
+- 完成操作：发布工作流 36598436071、主线/tag CI 和 Security Scan 成功；五平台附件 checksum、Linux 版本、GHCR 双架构与稳定别名验证完成。正式镜像 305→313→305 及 fresh313 的健康/登录/页面资源和调度管理行为实际通过；旧305条SQL保持。
+- 验证：首轮四个功能 smoke 阶段成功但宿主容器状态比较失败，原始整轮 FAIL 和起因未定明确保留；原脚本严格重试02 PASS、宿主不变、清理全部成功。同输入源码三态 1/0/1、补丁重建、原字节恢复与重新应用、固定四角色重开以及源/tag同树检查完成。
+- 修改文件：本后继交接仅修改 docs/PROJECT_MEMORY.md 顶部本轮状态、移除本轮进行中条目并追加本日志；其他 Agent 条目与所有历史日志保持。纯文档分支正常推送、PR、保护检查和合并结果统一记录在 release-0.2.1/handoff-closeout/RESULT.json，不触发新 Release。
+- 卡点/风险：没有待执行发布动作；首轮宿主状态变化未确定起因，不能据后续 PASS 抹去；没有真实供应商、生产首字或计费取消保证。本次发布未替换测试站或生产服务；测试站仍使用此前本地验收镜像。
+- 下一步：最终交付见 /xy2/artifacts/scheduling-optimization-20260928/release-0.2.1/FINAL_DELIVERY.json。后续 Agent 先读该记录及本次纯文档 PR 结果，按对应 HEAD 重新核实远端状态，避免重复发版或误移动标签。
