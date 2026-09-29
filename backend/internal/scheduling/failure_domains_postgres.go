@@ -33,13 +33,18 @@ func readFailureAdmission(ctx context.Context, q sqlQueryer, id int64, model str
 	var credentials []byte
 	var extra []byte
 	var platform, accountType string
-	err := q.QueryRowContext(ctx, "SELECT c.id,c.credentials,COALESCE(c.extra,'{}'::jsonb),c.platform,c.type,COALESCE(d.version,0),COALESCE(d.quota_pool_id,''),COALESCE(d.availability_pool_id,'') FROM accounts a JOIN accounts c ON c.id=COALESCE(a.parent_account_id,a.id) AND c.deleted_at IS NULL AND c.parent_account_id IS NULL LEFT JOIN scheduling_account_failure_domains d ON d.account_id=a.id WHERE a.id=$1 AND a.deleted_at IS NULL AND (a.parent_account_id IS NULL OR (c.platform='openai' AND c.type='oauth'))", id).Scan(&a.CredentialOwnerID, &credentials, &extra, &platform, &accountType, &a.Domains.Version, &a.Domains.QuotaPoolID, &a.Domains.AvailabilityPoolID)
+	err := q.QueryRowContext(ctx, "SELECT c.id,c.credentials,COALESCE(c.extra,'{}'::jsonb),c.platform,c.type,0,''::text,''::text FROM accounts a JOIN accounts c ON c.id=COALESCE(a.parent_account_id,a.id) AND c.deleted_at IS NULL AND c.parent_account_id IS NULL WHERE a.id=$1 AND a.deleted_at IS NULL AND (a.parent_account_id IS NULL OR (c.platform='openai' AND c.type='oauth'))", id).Scan(&a.CredentialOwnerID, &credentials, &extra, &platform, &accountType, &a.Domains.Version, &a.Domains.QuotaPoolID, &a.Domains.AvailabilityPoolID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrControlNotFound
 	}
 	if err != nil {
 		return a, err
 	}
+	return decodeFailureAdmission(a, credentials, extra, platform, accountType)
+}
+
+// Share identity decoding between single-winner admission and batch preflight.
+func decodeFailureAdmission(a FailureAdmission, credentials, extra []byte, platform, accountType string) (FailureAdmission, error) {
 	a.Credential = CredentialFingerprint(credentials)
 	var credentialData, extraData map[string]any
 	if json.Unmarshal(credentials, &credentialData) != nil || json.Unmarshal(extra, &extraData) != nil {
@@ -142,7 +147,7 @@ func (s *PostgresStore) PutFailureDomains(ctx context.Context, c AccountFailureD
 	return c, tx.Commit()
 }
 func failureGates(ctx context.Context, q sqlQueryer, keys []string) ([]FailureGate, error) {
-	rows, err := q.QueryContext(ctx, "SELECT gate_key,scope,reason,version,blocked,ready_after,EXISTS(SELECT 1 FROM scheduling_attempts a WHERE a.state<>'settled' AND g.gate_key=ANY(a.failure_probe_keys)) FROM scheduling_failure_gates g WHERE gate_key=ANY($1) ORDER BY gate_key", pq.Array(keys))
+	rows, err := q.QueryContext(ctx, "SELECT gate_key,scope,reason,version,blocked,ready_after,EXISTS(SELECT 1 FROM scheduling_attempts a WHERE "+admissionOccupancySQL("a.")+" AND g.gate_key=ANY(a.failure_probe_keys)) FROM scheduling_failure_gates g WHERE gate_key=ANY($1) ORDER BY gate_key", pq.Array(keys))
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +188,8 @@ func (s *PostgresStore) InspectFailureDomains(ctx context.Context, id int64, mod
 // Called inside BeginDispatch after existing family/account locks, before ticket.
 // Sorted open gate SHARE locks allow healthy members to dispatch concurrently.
 // Only cooldown/recovery gates use exclusive locks to serialize one probe. An expired Redis lease never erases
-// the existing PG attempt's gate keys, including UNKNOWN remote execution.
+// a live PG attempt's gate keys. Unknown executions keep a bounded hold, then
+// permit one recovery probe; their remote outcomes remain unknown in the audit.
 func admitFailureDomains(ctx context.Context, tx *sql.Tx, a *FailureAdmission) error {
 	if a == nil {
 		return nil
@@ -224,11 +230,17 @@ func admitFailureDomains(ctx context.Context, tx *sql.Tx, a *FailureAdmission) e
 		}
 		if ready.Valid {
 			var active bool
-			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM scheduling_attempts WHERE state<>'settled' AND $1=ANY(failure_probe_keys))", key).Scan(&active); err != nil {
+			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM scheduling_attempts WHERE "+admissionOccupancySQL("")+" AND $1=ANY(failure_probe_keys))", key).Scan(&active); err != nil {
 				return err
 			}
 			if active {
 				return ErrFailureDomainBlocked
+			}
+			// The expired predecessor can still report a genuine late terminal.
+			// Give this probe a new generation under the existing exclusive gate
+			// lock so the predecessor's feedback CAS cannot open our live gate.
+			if err = tx.QueryRowContext(ctx, "UPDATE scheduling_failure_gates SET version=version+1,updated_at=NOW() WHERE gate_key=$1 RETURNING version", key).Scan(&version); err != nil {
+				return err
 			}
 			a.ProbeVersions[key] = version
 		}

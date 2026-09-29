@@ -101,6 +101,7 @@ func TestControlledPreparationDeadlineDoesNotCancelCompletedLongStream(t *testin
 func TestControlledHTTPAuthenticationTerminalNeverRecoversHealth(t *testing.T) {
 	s, db, _, accounts := controlledIntegration(t, true)
 	ctx, r := controlledIntegrationRequest(t, s)
+	seedControlledActualModelHealth(t, s, r, accounts[0], r.Policy.Model, scheduling.HealthHalfOpen)
 	a := controlledPick(t, s, ctx, r, accounts)
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://unused", strings.NewReader("{\"model\":\"test-model\",\"stream\":false}"))
 	require.NoError(t, err)
@@ -118,6 +119,9 @@ func TestControlledHTTPAuthenticationTerminalNeverRecoversHealth(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &health))
 	require.Zero(t, health.GoodStreak)
 	require.NotEqual(t, scheduling.HealthHealthy, health.State)
+	eligible, _, err := s.controlledFailureCandidate(ctx, a, r.Policy.Model)
+	require.NoError(t, err)
+	require.False(t, eligible, "invalid credentials must remain blocked by the authoritative failure gate")
 }
 
 func TestControlledPreparationPreservesClientCancellation(t *testing.T) {

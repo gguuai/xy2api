@@ -3,7 +3,6 @@
 package service
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,11 +64,7 @@ func TestControlledBufferedSSEForwardAdapters(t *testing.T) {
 		{"alpha_wrong_schema", "alpha", "data: {\"ok\":true}\n\n", false, true},
 	} {
 		t.Run(input.name, func(t *testing.T) {
-			s, db, policy, accounts := controlledIntegration(t, true)
-			policy.Profiles[0].AttemptTimeoutMS = 10000
-			policy.Profiles[0].TotalBudgetMS = 20000
-			_, err := s.Store.PutPolicy(context.Background(), policy, 1)
-			require.NoError(t, err)
+			s, db, _, accounts := controlledIntegration(t, false)
 			ctx, request := controlledIntegrationRequest(t, s)
 			gateModel := openAIImagesResponsesMainModelValue()
 			if input.route == "direct" || input.route == "apikey" {

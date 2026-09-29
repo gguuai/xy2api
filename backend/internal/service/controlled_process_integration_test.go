@@ -51,10 +51,14 @@ func TestControlledGatewayProcessWorker(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("CONTROLLED_PROCESS_URL"), strings.NewReader("{\"model\":\"test-model\",\"stream\":true}"))
 	require.NoError(t, err)
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := service.roundTrip(req, id, 10, client.Do)
+	_, err = service.selectAccount(ctx, r, accounts, func(a *Account) (bool, string) { return a.ID == id, "process_fixture_account" }, nil, false)
+	var resp *http.Response
+	if err == nil {
+		resp, err = service.roundTrip(req, id, 10, client.Do)
+	}
 	if os.Getenv("CONTROLLED_PROCESS_BLOCKED") == "1" {
 		var failover *UpstreamFailoverError
-		require.True(t, errors.Is(err, scheduling.ErrFailureDomainBlocked) || (errors.As(err, &failover) && failover.PreDispatchSelectionInvalidated), "unexpected error: %v", err)
+		require.True(t, errors.Is(err, scheduling.ErrNoCandidate) || errors.Is(err, scheduling.ErrFailureDomainBlocked) || (errors.As(err, &failover) && failover.PreDispatchSelectionInvalidated), "unexpected error: %v", err)
 		require.Zero(t, r.Ledger.Snapshot().Attempts)
 		t.Logf("process=%d account=%d blocked=true actual_attempts=0", os.Getpid(), id)
 		return
@@ -135,7 +139,7 @@ func TestControlledCrossProcessDomainProbeSurvivesRedisLoss(t *testing.T) {
 		t.Fatal("first process never dispatched")
 	}
 	require.NoError(t, s.redis.FlushDB(ctx).Err())
-	out, err := makeChild(3, true).CombinedOutput()
+	out, err := makeChild(1, true).CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.EqualValues(t, 1, calls.Load(), "Redis loss must not launch a second remote probe")
 	t.Log(string(out))
@@ -143,7 +147,7 @@ func TestControlledCrossProcessDomainProbeSurvivesRedisLoss(t *testing.T) {
 	result := <-done
 	require.NoError(t, result.err, string(result.out))
 	t.Log(string(result.out))
-	out, err = makeChild(3, false).CombinedOutput()
+	out, err = makeChild(1, false).CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.EqualValues(t, 2, calls.Load())
 	t.Log(string(out))

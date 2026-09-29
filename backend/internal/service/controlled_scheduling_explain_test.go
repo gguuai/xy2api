@@ -57,7 +57,35 @@ func expectExplainControl(m sqlmock.Sqlmock, id int64, scope, state string) {
 	m.ExpectQuery("SELECT COUNT\\(\\*\\) FILTER").WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"active", "unknown", "pending"}).AddRow(0, 0, 0))
 	m.ExpectQuery("SELECT COUNT\\(\\*\\) FROM scheduling_session_grants").WithArgs(scope, id, int64(0)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 }
-func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testing.T) {
+
+// Group configuration is loaded once by group; model names never address a
+// policy row. These expectations also forbid legacy policy or projection writes.
+func expectExplainGroupPolicy(m sqlmock.Sqlmock, groupID int64, p *scheduling.GroupPolicy, accounts []Account) {
+	m.ExpectBegin()
+	if groupID > 0 {
+		m.ExpectQuery("SELECT id FROM groups").WithArgs(groupID).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(groupID))
+	}
+	query := m.ExpectQuery("SELECT version,policy FROM scheduling_group_policies").WithArgs(groupID)
+	if p == nil {
+		query.WillReturnError(sql.ErrNoRows)
+	} else {
+		raw, _ := json.Marshal(p)
+		query.WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(p.Version, raw))
+	}
+	members := sqlmock.NewRows([]string{"id", "priority"})
+	for _, a := range accounts {
+		members.AddRow(a.ID, a.Priority)
+	}
+	memberQuery := m.ExpectQuery("SELECT a.id,a.priority FROM accounts a")
+	if groupID > 0 {
+		memberQuery.WithArgs(groupID)
+	}
+	memberQuery.WillReturnRows(members)
+	m.ExpectQuery("SELECT DISTINCT ON").WithArgs(groupID).WillReturnRows(sqlmock.NewRows([]string{"model", "policy"}))
+	m.ExpectCommit()
+}
+
+func TestExplainGroupPolicyPinCapacityAndPreservesSharedState(t *testing.T) {
 	ctx := context.Background()
 	db, m, e := sqlmock.New()
 	require.NoError(t, e)
@@ -65,15 +93,12 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { require.NoError(t, client.Close()) }()
-	scoped := scheduling.Policy{GroupID: 7, Model: "m", Enabled: true, Mode: scheduling.ModeSWRR, Version: 4, Profiles: []scheduling.LatencyProfile{{Name: "known-context", ContextMinTokens: 8192}}, Accounts: []scheduling.AccountRule{{AccountID: 1, Weight: 7}, {AccountID: 2, Weight: 3}, {AccountID: 3, Weight: 1}}}
-	inherited := scheduling.LatencyProfile{Name: "ws-default", Transport: "ws", HealthThresholdMS: 8000, RecoveryThresholdMS: 6000, AttemptTimeoutMS: 12000, TotalBudgetMS: 30000, MinAttemptWindowMS: 6000}
-	global := scheduling.Policy{Model: "m", Profiles: []scheduling.LatencyProfile{inherited}}
-	for _, p := range []scheduling.Policy{scoped, global} {
-		raw, e := json.Marshal(p)
-		require.NoError(t, e)
-		m.ExpectQuery("SELECT version, policy FROM scheduling_policies").WithArgs(p.GroupID, "m").WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(p.Version, raw))
-	}
-	accounts := []Account{{ID: 1, Concurrency: 1}, {ID: 2, Concurrency: 3}, {ID: 3, Concurrency: 1}}
+	zero, one := 0, 1
+	p := scheduling.DefaultGroupPolicy(7)
+	p.Version = 4
+	p.Accounts = []scheduling.AccountRule{{AccountID: 1, Priority: &zero, Weight: 7}, {AccountID: 2, Priority: &zero, Weight: 3}, {AccountID: 3, Priority: &one, Weight: 1}}
+	accounts := []Account{{ID: 1, Priority: 0, Concurrency: 1}, {ID: 2, Priority: 0, Concurrency: 3}, {ID: 3, Priority: 1, Concurrency: 1}}
+	expectExplainGroupPolicy(m, 7, &p, accounts)
 	m.ExpectQuery("SELECT account_id,COUNT").WillReturnRows(sqlmock.NewRows([]string{"account_id", "count"}).AddRow(1, 1))
 	for _, a := range accounts {
 		expectExplainControl(m, a.ID, scheduling.ScopeAccount, scheduling.ControlRunning)
@@ -86,59 +111,116 @@ func TestExplainUsesInheritedProfilePinCapacityAndPreservesSharedState(t *testin
 			expectExplainFailureDomains(m, a.ID, false)
 		}
 	}
-	h := scheduling.HealthSnapshot{State: scheduling.HealthRecovering, RecoveryStage: 1, GoodStreak: 4, UpdatedAtMS: time.Now().UnixMilli()}
-	raw, e := json.Marshal(h)
-	require.NoError(t, e)
-	require.NoError(t, client.HSet(ctx, scheduling.HealthRedisKey(2, "m", inherited, "default", "unknown", "ws", scheduling.StableHealthIdentity("", "", nil, nil)), "snapshot", raw).Err())
+	require.NoError(t, client.Set(ctx, "explain-readonly-sentinel", "retained", 0).Err())
 	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{accounts: accounts}, concurrency: NewConcurrencyService(explainLoads{counts: map[int64]int{2: 1}})}
 	svc.SetExplainEligibility(allowExplain, nil)
 	before := mr.Dump()
-	out, e := svc.Explain(ctx, json.RawMessage("{\"group_id\":7,\"model\":\"m\",\"protocol\":\"ws\",\"pin_account_id\":2}"))
+	out, e := svc.Explain(ctx, json.RawMessage(`{"group_id":7,"model":"m","protocol":"ws","pin_account_id":2}`))
 	require.NoError(t, e)
 	require.Equal(t, before, mr.Dump())
 	result, ok := out.(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "global", result["profile_source"])
+	require.Equal(t, "group_accounts", result["policy_source"])
+	require.Equal(t, "group_wait_budget", result["profile_source"])
 	require.Equal(t, "unknown", result["context_bucket"])
-	require.Equal(t, scheduling.ModePin, result["mode"])
-	selected, ok := result["selected_account_id"].(*int64)
+	require.Equal(t, "account_weights", result["mode"])
+	require.Equal(t, int64(4), result["policy_version"])
+	selectedID, ok := result["selected_account_id"].(*int64)
 	require.True(t, ok)
-	require.Equal(t, int64(2), *selected)
+	require.NotNil(t, selectedID)
+	require.Equal(t, int64(2), *selectedID)
+	profile, ok := result["profile"].(scheduling.LatencyProfile)
+	require.True(t, ok)
+	require.Equal(t, scheduling.DefaultFirstOutputTimeoutMS, profile.AttemptTimeoutMS)
+	require.Zero(t, profile.HealthThresholdMS)
 	rows, ok := result["candidates"].([]schedulingExplainRow)
 	require.True(t, ok)
 	require.Equal(t, 1, rows[0].CurrentConcurrency)
 	require.False(t, rows[0].CapacityAvailable)
+	require.Equal(t, int64(7), rows[0].Weight)
 	require.Equal(t, 1, rows[1].CurrentConcurrency)
-	require.Equal(t, 1, *rows[1].RecoveryStage)
-	require.Equal(t, 4, rows[1].GoodStreak)
+	require.Nil(t, rows[1].RecoveryStage)
 	require.False(t, rows[2].Eligible)
 	require.Equal(t, "family_PAUSED", rows[2].Reason)
 	require.NoError(t, m.ExpectationsWereMet())
 }
-func TestExplainMissingScopedPolicyInheritsGlobalWithoutWrites(t *testing.T) {
+
+func TestExplainUnconfiguredGroupProjectsAccountsWithoutGlobalInheritance(t *testing.T) {
 	db, m, e := sqlmock.New()
 	require.NoError(t, e)
 	defer func() { _ = db.Close() }()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { require.NoError(t, client.Close()) }()
-	m.ExpectQuery("SELECT version, policy").WithArgs(int64(7), "m").WillReturnError(sql.ErrNoRows)
-	raw, e := json.Marshal(scheduling.Policy{Model: "m", Version: 9, Enabled: true, Mode: scheduling.ModeFillFirst})
-	require.NoError(t, e)
-	m.ExpectQuery("SELECT version, policy").WithArgs(int64(0), "m").WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(9, raw))
-	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{}}
+	accounts := []Account{{ID: 1, Priority: 17, Concurrency: 3}}
+	expectExplainGroupPolicy(m, 7, nil, accounts)
+	m.ExpectQuery("SELECT account_id,COUNT").WillReturnRows(sqlmock.NewRows([]string{"account_id", "count"}))
+	expectExplainControl(m, 1, scheduling.ScopeAccount, scheduling.ControlRunning)
+	expectExplainControl(m, 1, scheduling.ScopeFamily, scheduling.ControlRunning)
+	expectExplainFailureDomains(m, 1, false)
+	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(client)), accounts: explainAccounts{accounts: accounts}, concurrency: NewConcurrencyService(explainLoads{})}
+	svc.SetExplainEligibility(allowExplain, nil)
 	before := mr.Dump()
-	out, e := svc.Explain(context.Background(), json.RawMessage("{\"group_id\":7,\"model\":\"m\",\"context_tokens\":9000}"))
+	out, e := svc.Explain(context.Background(), json.RawMessage(`{"group_id":7,"model":"different-model","context_tokens":9000}`))
 	require.NoError(t, e)
 	require.Equal(t, before, mr.Dump())
 	result, ok := out.(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "global", result["policy_source"])
-	require.Equal(t, int64(9), result["policy_version"])
+	require.Equal(t, "group_accounts", result["policy_source"])
+	require.Equal(t, int64(0), result["policy_version"])
 	require.Equal(t, "8k_32k", result["context_bucket"])
-	selected, ok := result["selected_account_id"].(*int64)
+	rows, ok := result["candidates"].([]schedulingExplainRow)
 	require.True(t, ok)
-	require.Nil(t, selected)
+	require.Equal(t, 17, rows[0].Priority)
+	require.Equal(t, int64(1), rows[0].Weight)
+	selectedID, ok := result["selected_account_id"].(*int64)
+	require.True(t, ok)
+	require.NotNil(t, selectedID)
+	require.Equal(t, int64(1), *selectedID)
+	require.NoError(t, m.ExpectationsWereMet())
+}
+
+func TestLoadGroupPolicyIsSharedAcrossModelsAndIndependentAcrossGroups(t *testing.T) {
+	db, m, e := sqlmock.New()
+	require.NoError(t, e)
+	defer func() { _ = db.Close() }()
+	svc := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db)}
+	priority := -2
+	configured := scheduling.DefaultGroupPolicy(7)
+	configured.Version = 4
+	configured.FirstOutputTimeoutMS = 3000
+	configured.TotalWaitTimeoutMS = 9000
+	configured.Accounts = []scheduling.AccountRule{{AccountID: 1, Priority: &priority, Weight: 7}}
+	for _, tc := range []struct {
+		group      int64
+		model      string
+		configured bool
+	}{{7, "model-a", true}, {7, "model-b", true}, {9, "model-a", false}} {
+		query := m.ExpectQuery("SELECT version,policy FROM scheduling_group_policies").WithArgs(tc.group)
+		if tc.configured {
+			raw, err := json.Marshal(configured)
+			require.NoError(t, err)
+			query.WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(configured.Version, raw))
+		} else {
+			query.WillReturnError(sql.ErrNoRows)
+		}
+		ctx := NewControlledRequestContext(context.Background(), "responses")
+		r, on, err := svc.loadPolicy(ctx, &tc.group, tc.model, "")
+		require.NoError(t, err)
+		require.True(t, on)
+		require.Equal(t, tc.model, r.Policy.Model)
+		require.Equal(t, tc.group, r.Policy.GroupID)
+		if tc.configured {
+			require.Equal(t, configured.Accounts, r.Policy.Accounts)
+			require.Equal(t, int64(3000), r.Profile.AttemptTimeoutMS)
+			require.Equal(t, int64(4), r.Policy.Version)
+		} else {
+			require.Empty(t, r.Policy.Accounts)
+			require.Equal(t, scheduling.DefaultFirstOutputTimeoutMS, r.Profile.AttemptTimeoutMS)
+			require.Zero(t, r.Policy.Version)
+		}
+		r.Close()
+	}
 	require.NoError(t, m.ExpectationsWereMet())
 }
 func TestExplainEligibilityMatchesGatewayHardGatesWithoutMutations(t *testing.T) {
@@ -205,10 +287,10 @@ func TestExplainFailureDomainGateMatchesLiveEligibility(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { require.NoError(t, client.Close()) }()
-	p := scheduling.Policy{Model: "m", Enabled: true, Profiles: []scheduling.LatencyProfile{{Name: "unknown-safe"}, {Name: "known", ContextMinTokens: 8192}}}
-	raw, e := json.Marshal(p)
-	require.NoError(t, e)
-	m.ExpectQuery("SELECT version, policy").WithArgs(int64(0), "m").WillReturnRows(sqlmock.NewRows([]string{"version", "policy"}).AddRow(1, raw))
+	p := scheduling.DefaultGroupPolicy(0)
+	p.Version = 1
+	accounts := []Account{{ID: 1, Concurrency: 3}}
+	expectExplainGroupPolicy(m, 0, &p, accounts)
 	m.ExpectQuery("SELECT account_id,COUNT").WillReturnRows(sqlmock.NewRows([]string{"account_id", "count"}))
 	expectExplainControl(m, 1, scheduling.ScopeAccount, scheduling.ControlRunning)
 	expectExplainControl(m, 1, scheduling.ScopeFamily, scheduling.ControlRunning)
@@ -226,7 +308,7 @@ func TestExplainFailureDomainGateMatchesLiveEligibility(t *testing.T) {
 	require.Equal(t, "failure_domain_gate", rows[0].Reason)
 	profile, ok := result["profile"].(scheduling.LatencyProfile)
 	require.True(t, ok)
-	require.Equal(t, "unknown-safe", profile.Name)
+	require.Equal(t, scheduling.AccountPoolProfileName, profile.Name)
 	require.Equal(t, false, result["context_tokens_known"])
 	require.Equal(t, "default", result["reasoning_effort"])
 	require.Equal(t, before, mr.Dump())

@@ -12,10 +12,8 @@ import (
 func TestFailureRecoveryVerifiedCASAndUnknownProbe(t *testing.T) {
 	s, db := isolatedControlStore(t)
 	ctx := context.Background()
-	config, err := s.PutFailureDomains(ctx, AccountFailureDomains{AccountID: 1, QuotaPoolID: "org-a"}, 9)
-	require.NoError(t, err)
 	ticket := domainTicket(t, s, 1)
-	decision := ClassifyFailure(FailureEvidence{Trusted: true, Status: 429, Code: "insufficient_quota", SharedKind: "quota_pool", SharedPool: "org-a", ReplaySafe: true}, *ticket.Failure, time.Now())
+	decision := ClassifyFailure(FailureEvidence{Trusted: true, Status: 401, Code: "invalid_api_key", ReplaySafe: true}, *ticket.Failure, time.Now())
 	require.True(t, decision.Hard)
 	require.NoError(t, s.SettleAttempt(ctx, ticket.TicketID, "upstream_error", false))
 	require.NoError(t, s.ApplyFailureFeedback(ctx, ticket.TicketID, decision, false))
@@ -28,7 +26,7 @@ func TestFailureRecoveryVerifiedCASAndUnknownProbe(t *testing.T) {
 			gate = g
 		}
 	}
-	evidence := FailureRecoveryEvidence{GateKey: gate.Key, Model: "model-a", ExpectedVersion: gate.Version, DomainVersion: config.Version, Source: "provider_status", Reference: "quota-credit-confirmed-1", ObservedAt: time.Now()}
+	evidence := FailureRecoveryEvidence{GateKey: gate.Key, Model: "model-a", ExpectedVersion: gate.Version, DomainVersion: ticket.Failure.Domains.Version, Source: "provider_status", Reference: "credential-repaired-confirmed-1", ObservedAt: time.Now()}
 	bad := evidence
 	bad.ExpectedVersion--
 	_, err = s.PermitFailureRecovery(ctx, 1, bad, 9)
@@ -40,6 +38,9 @@ func TestFailureRecoveryVerifiedCASAndUnknownProbe(t *testing.T) {
 	require.NoError(t, s.MarkAttemptUnknown(ctx, probe.TicketID))
 	evidence.ExpectedVersion++
 	evidence.ObservedAt = time.Now()
+	_, err = s.PermitFailureRecovery(ctx, 1, evidence, 9)
+	require.ErrorIs(t, err, ErrVersionConflict, "starting a probe advances its generation")
+	evidence.ExpectedVersion = probe.Failure.ProbeVersions[gate.Key]
 	_, err = s.PermitFailureRecovery(ctx, 1, evidence, 9)
 	require.ErrorIs(t, err, ErrFailureDomainBlocked)
 	var n int
@@ -57,7 +58,7 @@ func TestFailureShadowUsesActualCredentialOwner(t *testing.T) {
 	child, err := s.FreezeFailureAdmission(ctx, 2, "model-a")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), child.CredentialOwnerID)
-	require.Equal(t, parent.AccountKey(), child.AccountKey(), "a known credential shadow shares credential failure, not model quota")
+	require.NotEqual(t, parent.AccountKey(), child.AccountKey(), "runtime failure gates remain account-local even when credentials share an owner")
 	require.NotEqual(t, parent.ModelKey(), child.ModelKey())
 	require.Equal(t, parent.Credential, child.Credential)
 	require.Equal(t, parent.HealthIdentity, child.HealthIdentity)

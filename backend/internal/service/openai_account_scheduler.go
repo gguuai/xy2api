@@ -2180,6 +2180,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 			return s.selectControlledOpenAI(ctx, request, OpenAIAccountScheduleRequest{GroupID: groupID, PreviousResponseID: previousResponseID, SessionHash: sessionHash, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequiredTransport: requiredTransport, RequiredCapability: requiredCapability, RequiredImageCapability: requiredImageCapability, RequireCompact: requireCompact, Platform: platform, PreviousResponseCanMove: previousResponseCanMove})
 		}
 
+		if Sub2APISchedulingEnabled(ctx) {
+			return s.selectAccountWithoutQualityRouting(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+		}
 		if selection, decision, handled, e := s.selectLegacyControlledOwner(ctx, OpenAIAccountScheduleRequest{GroupID: groupID, PreviousResponseID: previousResponseID, SessionHash: sessionHash, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequiredTransport: requiredTransport, RequiredCapability: requiredCapability, RequiredImageCapability: requiredImageCapability, RequireCompact: requireCompact, Platform: platform}); handled {
 			return selection, decision, e
 		}

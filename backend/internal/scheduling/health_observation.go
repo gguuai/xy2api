@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -41,6 +43,9 @@ func (r *Runtime) FreezeSelectedHealth(ctx context.Context, accountID int64, mod
 	if selected.AccountID != accountID {
 		return HealthFence{}, ErrHealthSelectionStale
 	}
+	if p.Name == AccountPoolProfileName && selected.HealthFence == nil {
+		return HealthFence{}, ErrHealthSelectionStale
+	}
 	return r.store.freezeHealth(ctx, accountID, model, p, reasoning, bucket, transport, identity, &selected)
 }
 
@@ -52,6 +57,12 @@ func (s *RedisStore) freezeHealth(ctx context.Context, accountID int64, model st
 		return HealthFence{}, ErrHealthIdentity
 	}
 	key := HealthRedisKey(accountID, model, p, reasoning, bucket, transport, identity)
+	watchKeys := []string{key}
+	probeKey := ""
+	if p.Name == AccountPoolProfileName && selected != nil {
+		probeKey = accountPoolProbePrefix(accountID, model, p, reasoning, bucket, transport, identity) + ":account:" + strconv.FormatInt(accountID, 10)
+		watchKeys = append(watchKeys, probeKey)
+	}
 	var fence HealthFence
 	for n := 0; n < 8; n++ {
 		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
@@ -76,13 +87,35 @@ func (s *RedisStore) freezeHealth(ctx context.Context, accountID int64, model st
 						return ErrHealthSelectionStale
 					}
 				}
+				if probeKey != "" && next.State == HealthHalfOpen {
+					parts := strings.Split(selected.ProbeToken, "|")
+					if !selected.Probe || len(parts) != 3 || parts[0] != probeKey || parts[1] != probeKey || parts[2] == "" {
+						return ErrHealthSelectionStale
+					}
+					owner, err := tx.Get(ctx, probeKey).Result()
+					if errors.Is(err, redis.Nil) || (err == nil && owner != parts[2]) {
+						return ErrHealthSelectionStale
+					}
+					if err != nil {
+						return err
+					}
+				}
 			}
 			if next.Generation == "" {
 				next.Generation = opaqueID()
 			}
 			fence = HealthFence{Model: model, Generation: next.Generation, StageRevision: next.StageRevision, HealthRevision: p.HealthRevision, HealthIdentity: identity, State: next.State}
 			if !missing && next.Generation == old.Generation && next.State == old.State && next.StageRevision == old.StageRevision && next.RecoveryRequirement == old.RecoveryRequirement {
-				return nil
+				if probeKey == "" {
+					return nil
+				}
+				// EXEC a read-only command even without a health transition. WATCH
+				// otherwise would not validate the joint generation/lease snapshot.
+				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Exists(ctx, key)
+					return nil
+				})
+				return err
 			}
 			raw, err := json.Marshal(next)
 			if err != nil {
@@ -96,7 +129,7 @@ func (s *RedisStore) freezeHealth(ctx context.Context, accountID int64, model st
 				return nil
 			})
 			return err
-		}, key)
+		}, watchKeys...)
 		if err == nil {
 			return fence, nil
 		}

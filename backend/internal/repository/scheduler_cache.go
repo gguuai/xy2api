@@ -17,8 +17,8 @@ import (
 const (
 	schedulerBucketSetKey          = "sched:buckets"
 	schedulerOutboxWatermarkKey    = "sched:outbox:watermark"
-	schedulerAccountPrefix         = "sched:acc:"
-	schedulerAccountMetaPrefix     = "sched:meta:"
+	schedulerAccountPrefix         = "sched:acc:v2:"
+	schedulerAccountMetaPrefix     = "sched:meta:v2:"
 	schedulerAccountLastUsedPrefix = "sched:acc:last_used:"
 	schedulerActivePrefix          = "sched:active:"
 	schedulerReadyPrefix           = "sched:ready:"
@@ -807,8 +807,9 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 		}
 
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+		// Full payload and metadata share a single monotonic database version.
+		// A lagging point refresh or snapshot cannot undo a newer switch.
+		writeSchedulerAccountScript.Eval(ctx, pipe, []string{schedulerAccountKey(id), schedulerAccountMetaKey(id), schedulerAccountRevisionKey(id)}, schedulerAccountRevision(account), fullPayload, metaPayload)
 		// Keep the hot LastUsedAt side key untouched: a lagging snapshot rebuild
 		// must not overwrite a newer scheduler update.
 		accountIDs = append(accountIDs, account.ID)

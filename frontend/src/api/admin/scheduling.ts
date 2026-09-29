@@ -1,38 +1,13 @@
 import { apiClient } from '../client'
-import type { AccountSchedulingControl, SchedulingControlCommand, SchedulingControlScope, SchedulingExplainRequest, SchedulingExplanation, SchedulingPolicy, SchedulingPolicyDocument, SchedulingRequestAttempts, SchedulingTrafficStats } from '@/types/scheduling'
+import type { GroupSchedulingPolicy, GroupSchedulingDocument } from '@/types/scheduling'
 
-export async function getPolicy(groupID: number, model: string, signal?: AbortSignal): Promise<SchedulingPolicyDocument> {
-  const { data } = await apiClient.get<SchedulingPolicyDocument>('/admin/scheduling/policies', { params: { group_id: groupID, model }, signal })
+export async function getGroupPolicy(groupID: number, signal?: AbortSignal): Promise<GroupSchedulingDocument> {
+  const { data } = await apiClient.get<GroupSchedulingDocument>(`/admin/scheduling/groups/${groupID}`, { signal })
   return data
 }
-export async function savePolicy(policy: SchedulingPolicy, expectedVersion: number, resetHealthProfiles: string[] = []): Promise<SchedulingPolicyDocument> {
-  const { data } = await apiClient.put<SchedulingPolicyDocument>('/admin/scheduling/policies', {
-    group_id: policy.group_id, model: policy.model, expected_version: expectedVersion, policy, ...(resetHealthProfiles.length ? { reset_health_profiles: resetHealthProfiles } : {})
-  })
+export async function saveGroupPolicy(policy: GroupSchedulingPolicy, expectedVersion: number): Promise<GroupSchedulingDocument> {
+  const { data } = await apiClient.put<GroupSchedulingDocument>(`/admin/scheduling/groups/${policy.group_id}`, { expected_version: expectedVersion, policy })
   return data
 }
-export async function restoreInheritance(groupID: number, model: string, expectedVersion: number): Promise<SchedulingPolicyDocument> {
-  const { data } = await apiClient.delete<SchedulingPolicyDocument>('/admin/scheduling/policies', { data: { group_id: groupID, model, expected_version: expectedVersion } })
-  return data
-}
-export async function explain(request: SchedulingExplainRequest, signal?: AbortSignal): Promise<SchedulingExplanation> {
-  const { data } = await apiClient.post<SchedulingExplanation>('/admin/scheduling/explain', request, { signal })
-  return data
-}
-export async function getControl(accountID: number, scope: SchedulingControlScope = 'logical_account', signal?: AbortSignal): Promise<AccountSchedulingControl> {
-  const { data } = await apiClient.get<AccountSchedulingControl>('/admin/accounts/' + accountID + '/scheduling-control', { params: { scope }, signal })
-  return data
-}
-export async function setControl(accountID: number, command: SchedulingControlCommand): Promise<AccountSchedulingControl> {
-  const { data } = await apiClient.post<AccountSchedulingControl>('/admin/accounts/' + accountID + '/scheduling-control', command)
-  return data
-}
-export async function getRequestAttempts(requestID: string, signal?: AbortSignal): Promise<SchedulingRequestAttempts> {
-  const { data } = await apiClient.get<SchedulingRequestAttempts>('/admin/scheduling/requests/' + encodeURIComponent(requestID) + '/attempts', { signal })
-  return data
-}
-export async function getStats(groupID: number, model: string, since: string, signal?: AbortSignal): Promise<SchedulingTrafficStats> {
-  const { data } = await apiClient.get<SchedulingTrafficStats>('/admin/scheduling/stats', { params: { group_id: groupID, model, since }, signal })
-  return data
-}
-export default { getPolicy, savePolicy, restoreInheritance, explain, getControl, setControl, getRequestAttempts, getStats }
+
+export default { getGroupPolicy, saveGroupPolicy }

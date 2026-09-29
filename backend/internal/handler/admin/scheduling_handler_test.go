@@ -109,7 +109,7 @@ func TestSchedulingHandlerReadsNoWrites(t *testing.T) {
 	require.Equal(t, 2, s.reads)
 	require.Zero(t, s.writes)
 }
-func TestSchedulingLegacyAndBulkControlsUseGate(t *testing.T) {
+func TestSchedulingLegacyAndBulkControlsUseAccountSwitch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s := &schedulingAdminStub{}
 	svc := &stubAdminService{}
@@ -120,13 +120,12 @@ func TestSchedulingLegacyAndBulkControlsUseGate(t *testing.T) {
 	r.POST("/bulk", h.BulkUpdate)
 	w := schedulingTestCall(r, "POST", "/accounts/7/schedulable", `{"schedulable":false}`)
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, "pause", s.commands[0].Action)
+	require.Zero(t, s.writes)
 	w = schedulingTestCall(r, "POST", "/bulk", `{"account_ids":[1,2],"schedulable":true}`)
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Nil(t, svc.lastBulkUpdateAccountInput.Schedulable)
-	require.Equal(t, 3, s.writes)
-	require.Equal(t, "resume", s.commands[1].Action)
-	require.Equal(t, "resume", s.commands[2].Action)
+	require.NotNil(t, svc.lastBulkUpdateAccountInput.Schedulable)
+	require.True(t, *svc.lastBulkUpdateAccountInput.Schedulable)
+	require.Zero(t, s.writes)
 }
 
 func TestSchedulingHandlerRequestAttemptsIsReadOnly(t *testing.T) {

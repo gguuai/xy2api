@@ -16,7 +16,7 @@ import (
 func explainPGSnapshot(t *testing.T, db *sql.DB) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	for _, table := range []string{"accounts", "scheduler_outbox", "scheduling_policies", "scheduling_controls", "scheduling_attempts", "scheduling_owner_sessions", "scheduling_session_grants"} {
+	for _, table := range []string{"accounts", "scheduler_outbox", "scheduling_policies", "scheduling_group_policies", "groups", "account_groups", "scheduling_controls", "scheduling_attempts", "scheduling_owner_sessions", "scheduling_session_grants"} {
 		var rows string
 		require.NoError(t, db.QueryRow("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text FROM "+table+" t").Scan(&rows))
 		out[table] = rows
@@ -52,14 +52,14 @@ func TestExplainRealPostgresRedisIsPureAndPredictsNextSelection(t *testing.T) {
 	gateway := &OpenAIGatewayService{accountRepo: s.accounts, schedulerSnapshot: &SchedulerSnapshotService{groupRepo: explainGroups{group: group}}}
 	s.SetExplainEligibility(gateway.ExplainSchedulingEligibility, nil)
 	s.concurrency = NewConcurrencyService(explainLoads{counts: map[int64]int{1: 2}})
-	// An unknown ticket, admin family pause, genuine allocation reservation and
+	// An unknown ticket, a disabled account, genuine allocation reservation and
 	// Redis expired data are all present before explanation. Nothing may clean them.
 	ticket, e := s.Store.BeginDispatch(ctx, scheduling.DispatchRequest{AccountID: 1, RequestID: "explain-unknown", NodeID: "test", HardConcurrency: 10})
 	require.NoError(t, e)
 	require.NoError(t, s.Store.MarkAttemptUnknown(ctx, ticket.TicketID))
-	_, e = s.Store.Control(ctx, scheduling.ControlCommand{AccountID: 3, Scope: scheduling.ScopeFamily, Action: "pause"})
+	_, e = db.Exec("UPDATE accounts SET schedulable=FALSE WHERE id=3")
 	require.NoError(t, e)
-	req := scheduling.SelectionRequest{Policy: p, Profile: scheduling.LatencyProfile{Name: "unconfigured"}, ContextBucket: "unknown", Transport: "http", Now: time.Now(), Candidates: []scheduling.Candidate{{AccountID: 1, Priority: 0, HardEligible: true, CapacityAvailable: true}, {AccountID: 2, Priority: 0, HardEligible: true, CapacityAvailable: true}, {AccountID: 3, Priority: 1, HardEligible: false, CapacityAvailable: true}}}
+	req := scheduling.SelectionRequest{Policy: p, Profile: scheduling.LatencyProfile{Name: scheduling.AccountPoolProfileName, AttemptTimeoutMS: 120000, TotalBudgetMS: 240000, MinAttemptWindowMS: 1000}, ContextBucket: "unknown", Transport: "http", Now: time.Now(), Candidates: []scheduling.Candidate{{AccountID: 1, Priority: 0, HardEligible: true, CapacityAvailable: true}, {AccountID: 2, Priority: 0, HardEligible: true, CapacityAvailable: true}, {AccountID: 3, Priority: 1, HardEligible: false, CapacityAvailable: true}}}
 	initial, e := s.Runtime.Select(ctx, req)
 	require.NoError(t, e)
 	require.NoError(t, s.Runtime.CommitSelection(ctx, initial))

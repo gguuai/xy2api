@@ -42,6 +42,12 @@ func (s *ControlledSchedulingService) invalidateControlledSelection(ctx context.
 	s.releaseDecisionContext(ctx, decision)
 	r.mu.Lock()
 	r.decisionPending = false
+	if r.Policy.AccountPool && decision.AccountID > 0 {
+		if r.admissionRejected == nil {
+			r.admissionRejected = make(map[int64]bool)
+		}
+		r.admissionRejected[decision.AccountID] = true
+	}
 	r.gateRejections++
 	rejected := r.gateRejections
 	r.mu.Unlock()

@@ -235,3 +235,9 @@ func (h *SchedulingHandler) GetStatistics(c *gin.Context) {
 	}
 	response.Success(c, result)
 }
+
+// RetiredAccountScheduling preserves an explicit response for saved clients. The
+// original account switch is now the only administrative admission control.
+func (h *SchedulingHandler) RetiredAccountScheduling(c *gin.Context) {
+	response.Error(c, http.StatusGone, "This scheduling control is retired; use the account scheduling switch")
+}

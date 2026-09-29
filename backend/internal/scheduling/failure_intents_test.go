@@ -14,6 +14,9 @@ func TestFailureTerminalIntentSurvivesCrashBeforeSettlement(t *testing.T) {
 	require.NoError(t, err)
 	ticket := domainTicket(t, s, 1)
 	decision := ClassifyFailure(FailureEvidence{Trusted: true, Status: 429, Code: "insufficient_quota", SharedKind: "quota_pool", SharedPool: "org-a", ReplaySafe: true}, *ticket.Failure, time.Now())
+	require.Equal(t, "account_model", decision.Scope)
+	require.Equal(t, "cooldown", decision.Effect)
+	require.False(t, decision.Hard, "retired pool metadata cannot turn a local quota cooldown into a shared hard block")
 	require.NoError(t, s.RecordTerminalFailureIntent(ctx, ticket.TicketID, "upstream_error", "remote_terminal", false, decision, false))
 	// Re-create the service store: no in-memory Finish callback survives.
 	restarted := NewPostgresStore(db)
@@ -30,7 +33,7 @@ func TestFailureTerminalIntentSurvivesCrashBeforeSettlement(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, n)
 	var gates, audits int
-	require.NoError(t, db.QueryRow("SELECT count(*) FROM scheduling_failure_gates WHERE blocked").Scan(&gates))
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM scheduling_failure_gates WHERE blocked OR ready_after>NOW()").Scan(&gates))
 	require.Equal(t, 1, gates)
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM scheduling_failure_audit WHERE ticket_id=$1 AND action='failure_feedback'", ticket.TicketID).Scan(&audits))
 	require.Equal(t, 1, audits)

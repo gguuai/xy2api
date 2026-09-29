@@ -59,6 +59,14 @@ func isolatedControlStore(t *testing.T) (*PostgresStore, *sql.DB) {
 	require.NoError(t, err)
 	_, err = db.Exec(string(migration))
 	require.NoError(t, err)
+	migration, err = os.ReadFile("../../migrations/263_dual_scheduling_mode.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(migration))
+	require.NoError(t, err)
+	migration, err = os.ReadFile("../../migrations/264_scheduling_bounded_unknown_recovery.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(migration))
+	require.NoError(t, err)
 	return NewPostgresStore(db), db
 }
 func testDispatch(id int64, session string) DispatchRequest {
@@ -74,6 +82,8 @@ func TestPostgresControlIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, ControlDraining, c.State)
 		require.EqualValues(t, 1, c.ActiveAttempts)
+		_, err = db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
+		require.NoError(t, err)
 		_, err = s.BeginDispatch(ctx, testDispatch(1, ""))
 		require.ErrorIs(t, err, ErrControlBlocked)
 		require.NoError(t, s.SettleAttempt(ctx, ticket.TicketID, "completed", true))
@@ -91,7 +101,7 @@ func TestPostgresControlIntegration(t *testing.T) {
 		require.Equal(t, ControlRunning, c.State)
 	})
 	t.Run("pause_dispatch_race", func(t *testing.T) {
-		s, _ := isolatedControlStore(t)
+		s, db := isolatedControlStore(t)
 		ctx := context.Background()
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -114,7 +124,7 @@ func TestPostgresControlIntegration(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := s.Control(ctx, ControlCommand{AccountID: 1, Action: "pause"})
+			_, err := db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
 			if err != nil {
 				errs <- err
 			}
@@ -134,16 +144,16 @@ func TestPostgresControlIntegration(t *testing.T) {
 		}
 	})
 	t.Run("family_and_logical_scope", func(t *testing.T) {
-		s, _ := isolatedControlStore(t)
+		s, db := isolatedControlStore(t)
 		ctx := context.Background()
-		_, err := s.Control(ctx, ControlCommand{AccountID: 1, Action: "pause"})
+		_, err := db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
 		require.NoError(t, err)
 		_, err = s.BeginDispatch(ctx, testDispatch(2, ""))
 		require.NoError(t, err)
 		_, err = s.Control(ctx, ControlCommand{AccountID: 2, Scope: ScopeFamily, Action: "pause"})
 		require.NoError(t, err)
 		_, err = s.BeginDispatch(ctx, testDispatch(2, ""))
-		require.ErrorIs(t, err, ErrControlBlocked)
+		require.NoError(t, err, "retired family control cannot disable a related account")
 		_, err = s.Control(ctx, ControlCommand{AccountID: 2, Scope: ScopeFamily, Action: "resume"})
 		require.NoError(t, err)
 		_, err = s.BeginDispatch(ctx, testDispatch(1, ""))
@@ -155,8 +165,8 @@ func TestPostgresControlIntegration(t *testing.T) {
 		_, err = s.BeginDispatch(ctx, wrong)
 		require.ErrorIs(t, err, ErrInvalidControl)
 	})
-	t.Run("bounded_session_drain", func(t *testing.T) {
-		s, _ := isolatedControlStore(t)
+	t.Run("retired_session_grant_cannot_override_switch", func(t *testing.T) {
+		s, db := isolatedControlStore(t)
 		ctx := context.Background()
 		ticket, err := s.BeginDispatch(ctx, testDispatch(1, "old-owner"))
 		require.NoError(t, err)
@@ -164,16 +174,15 @@ func TestPostgresControlIntegration(t *testing.T) {
 		c, err := s.Control(ctx, ControlCommand{AccountID: 1, Action: "session_drain", SessionDurationSeconds: 60, SessionMaxTurns: 1})
 		require.NoError(t, err)
 		require.EqualValues(t, 1, c.AllowedSessions)
-		_, err = s.BeginDispatch(ctx, testDispatch(1, "new-owner"))
-		require.ErrorIs(t, err, ErrControlBlocked)
-		next, err := s.BeginDispatch(ctx, testDispatch(1, "old-owner"))
+		_, err = db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
 		require.NoError(t, err)
-		_, err = s.BeginDispatch(ctx, testDispatch(1, "old-owner"))
-		require.ErrorIs(t, err, ErrControlBlocked)
-		require.NoError(t, s.SettleAttempt(ctx, next.TicketID, "completed", false))
-		c, err = s.GetControl(ctx, 1, ScopeAccount)
-		require.NoError(t, err)
-		require.Equal(t, ControlPaused, c.State)
+		for _, session := range []string{"new-owner", "old-owner"} {
+			_, err = s.BeginDispatch(ctx, testDispatch(1, session))
+			require.ErrorIs(t, err, ErrControlBlocked)
+		}
+		var remaining int
+		require.NoError(t, db.QueryRow("SELECT remaining_turns FROM scheduling_session_grants WHERE subject_id=1").Scan(&remaining))
+		require.Equal(t, 1, remaining)
 	})
 	t.Run("lease_expiry_and_force_stop", func(t *testing.T) {
 		s, _ := isolatedControlStore(t)
@@ -287,7 +296,7 @@ func TestPostgresControlIntegration(t *testing.T) {
 		_, err = s.BeginDispatch(ctx, r)
 		require.NoError(t, err)
 	})
-	t.Run("session_candidate_is_read_only", func(t *testing.T) {
+	t.Run("retired_session_candidate_cannot_grant_admission", func(t *testing.T) {
 		s, _ := isolatedControlStore(t)
 		ctx := context.Background()
 		ticket, err := s.BeginDispatch(ctx, testDispatch(1, "owner"))
@@ -298,7 +307,7 @@ func TestPostgresControlIntegration(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			ok, e := s.CanContinueSession(ctx, 1, "owner")
 			require.NoError(t, e)
-			require.True(t, ok)
+			require.False(t, ok, "retired grants cannot provide an admission override")
 		}
 		_, err = s.BeginDispatch(ctx, testDispatch(1, "owner"))
 		require.NoError(t, err)

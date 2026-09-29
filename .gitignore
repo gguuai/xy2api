@@ -160,6 +160,7 @@ docs/*
 !docs/IQ_CURRENT_HEALTH.md
 !docs/CONTROLLED_SCHEDULING.md
 !docs/CONTROLLED_SCHEDULING_ACCEPTANCE.md
+!docs/account-scheduling.md
 !docs/IQ_RELIABILITY_IMPLEMENTATION.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/upstream-sync/
@@ -184,3 +185,7 @@ issues/
 .vite/
 # 本地闭源插件开发目录及构建产物不进入 XY2API 仓库
 /plugins/
+
+!docs/ui-scheduling-dual-mode.md
+
+!docs/ui-scheduling-one-click.md

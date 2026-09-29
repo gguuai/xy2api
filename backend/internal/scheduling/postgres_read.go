@@ -12,7 +12,8 @@ import (
 	"github.com/lib/pq"
 )
 
-// AccountActiveCounts includes uncertain attempts, even when a lease has expired.
+// AccountActiveCounts includes live dispatches and bounded unknown holds. Remote
+// uncertainty remains visible separately, without permanently consuming capacity.
 func (s *PostgresStore) AccountActiveCounts(ctx context.Context, ids []int64) (map[int64]int, error) {
 	out := make(map[int64]int, len(ids))
 	if err := s.ready(); err != nil {
@@ -21,7 +22,7 @@ func (s *PostgresStore) AccountActiveCounts(ctx context.Context, ids []int64) (m
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT account_id,COUNT(*) FROM scheduling_attempts WHERE account_id=ANY($1) AND state<>'settled' GROUP BY account_id", pq.Array(ids))
+	rows, err := s.db.QueryContext(ctx, "SELECT account_id,COUNT(*) FROM scheduling_attempts WHERE account_id=ANY($1) AND "+admissionOccupancySQL("")+" GROUP BY account_id", pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -37,70 +38,29 @@ func (s *PostgresStore) AccountActiveCounts(ctx context.Context, ids []int64) (m
 	return out, rows.Err()
 }
 
-// CanContinueSession is strictly read-only and never spends a turn. The final
-// dispatch transaction checks the same grants while holding both control locks.
+// CanContinueSession remains for the retired session-drain interface. A new
+// turn is a new request and cannot bypass the single account scheduling switch.
 func (s *PostgresStore) CanContinueSession(ctx context.Context, accountID int64, sessionID string) (bool, error) {
-	if err := s.ready(); err != nil {
-		return false, err
-	}
-	if sessionID == "" {
-		return false, nil
-	}
-	family, err := familyFor(ctx, s.db, accountID)
-	if err != nil {
-		return false, err
-	}
-	usesGrant := false
-	for _, k := range []struct {
-		scope string
-		id    int64
-	}{{ScopeFamily, family}, {ScopeAccount, accountID}} {
-		c, e := scanControl(ctx, s.db, accountID, k.scope, k.id, false)
-		if e != nil {
-			return false, e
-		}
-		if c.State == ControlRunning {
-			continue
-		}
-		if c.Mode != "session_drain" || (c.State != ControlDraining && c.State != ControlUncertain) {
-			return false, nil
-		}
-		var exists bool
-		e = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM scheduling_session_grants WHERE scope=$1 AND subject_id=$2 AND epoch=$3 AND session_id=$4 AND remaining_turns>0 AND expires_at>NOW())", k.scope, k.id, c.Epoch, sessionID).Scan(&exists)
-		if e != nil {
-			return false, e
-		}
-		if !exists {
-			return false, nil
-		}
-		usesGrant = true
-	}
-	return usesGrant, nil
+	return false, nil
 }
 
-// CanAdmitControl is a read-only check of both scopes. It is suitable for candidate
-// filtering; only BeginDispatch grants permission to send.
+// CanAdmitControl reads the one authoritative account switch. Historical control
+// records and family grants are retained for audit only. BeginDispatch rechecks
+// this value under an account row lock before authorizing a physical attempt.
 func (s *PostgresStore) CanAdmitControl(ctx context.Context, accountID int64, sessionID string) (bool, error) {
 	if err := s.ready(); err != nil {
 		return false, err
 	}
-	family, err := familyFor(ctx, s.db, accountID)
+	var enabled bool
+	var status string
+	err := s.db.QueryRowContext(ctx, "SELECT schedulable,status FROM accounts WHERE id=$1 AND deleted_at IS NULL", accountID).Scan(&enabled, &status)
+	if err == sql.ErrNoRows {
+		return false, ErrControlNotFound
+	}
 	if err != nil {
 		return false, err
 	}
-	for _, k := range []struct {
-		scope string
-		id    int64
-	}{{ScopeFamily, family}, {ScopeAccount, accountID}} {
-		c, e := scanControl(ctx, s.db, accountID, k.scope, k.id, false)
-		if e != nil {
-			return false, e
-		}
-		if c.State != ControlRunning {
-			return s.CanContinueSession(ctx, accountID, sessionID)
-		}
-	}
-	return true, nil
+	return enabled && status == "active", nil
 }
 
 // A read-only lookup for integrations that must preserve strong response ownership.

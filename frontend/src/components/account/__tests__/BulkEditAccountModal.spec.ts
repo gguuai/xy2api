@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
@@ -83,6 +84,17 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
 }
 
 describe('BulkEditAccountModal', () => {
+  it.each(['controlled', 'sub2api'] as const)('keeps account editing free of scheduling scope and failure-domain settings in %s mode', async mode => {
+    useSchedulingModeStore().document = { mode, version: 1 }
+    const wrapper = mountModal()
+    await flushPromises()
+    expect(wrapper.text()).not.toMatch(/failureDomains|controlTitle|credentialFamily|diagnosticsTitle/)
+    expect(wrapper.find('[data-testid="quota-pool-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="availability-pool-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="control-scope"]').exists()).toBe(false)
+    expect(wrapper.find('account-failure-domains-stub').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('updates only selected IQ fields across accounts', async () => {
     vi.mocked(adminAPI.accounts.bulkUpdate).mockResolvedValue({ success: 2, failed: 0 } as any)
     const wrapper = mountModal({ selectedPlatforms: ['openai'] })

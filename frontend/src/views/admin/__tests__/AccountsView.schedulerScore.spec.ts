@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
@@ -131,6 +132,7 @@ const baseAccount = {
 
 describe('admin AccountsView scheduler score column', () => {
   beforeEach(() => {
+  useSchedulingModeStore().document = { mode: 'sub2api', version: 1 }
     localStorage.clear()
 
     listAccounts.mockReset()
@@ -240,6 +242,14 @@ describe('admin AccountsView scheduler score column', () => {
     expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
       include_scheduler_score: '1'
     }))
+  })
+
+  it('never requests upstream scores in controlled mode even when a saved layout enables them', async () => {
+    useSchedulingModeStore().document = { mode: 'controlled', version: 2 }
+    localStorage.setItem('account-hidden-columns', JSON.stringify(['today_stats']))
+    localStorage.setItem('account-hidden-columns-version', 'scheduler-score-hidden-by-default')
+    mountView(); await flushPromises()
+    expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ include_scheduler_score: '0' }))
   })
 
   it('still shows a dash when no scheduler score is available', async () => {

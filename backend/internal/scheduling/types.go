@@ -31,6 +31,9 @@ var (
 )
 
 type Policy struct {
+	// AccountPool selects the group account-pool kernel. It is internal transport
+	// metadata, never a second administrator-configurable routing mode.
+	AccountPool  bool             `json:"-"`
 	GroupID      int64            `json:"group_id"`
 	Model        string           `json:"model"`
 	Version      int64            `json:"version"`

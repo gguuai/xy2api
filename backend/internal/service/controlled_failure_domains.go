@@ -162,7 +162,7 @@ func (d *controlledDispatch) observeFailureResponse(response *http.Response) {
 	d.mu.Lock()
 	d.failureEvidence = e
 	d.mu.Unlock()
-	decision := scheduling.ClassifyFailure(e, *d.ticket.Failure, time.Now())
+	decision := d.classifySchedulingFailure(e)
 	if decision.Retry == "stop" {
 		d.request.mu.Lock()
 		d.request.ReplaySafe = false
@@ -194,16 +194,21 @@ func (d *controlledDispatch) classifyFailureDomains(outcome string, err error) s
 	}
 	d.mu.Lock()
 	e := d.failureEvidence
-	e.FirstSemanticTimeout = d.timeout && !d.clipped
+	timedOut := d.timeout
+	transportAttempted := d.sent
+	e.FirstSemanticTimeout = timedOut && !d.clipped && d.semanticObservable
+	e.AttemptTimeout = timedOut && !d.clipped && !d.semanticObservable
 	d.mu.Unlock()
 	d.request.mu.Lock()
 	e.ReplaySafe = d.request.ReplaySafe
 	e.OwnerPinned = d.request.owner
 	e.Committed = d.request.Ledger != nil && d.request.Ledger.Snapshot().Committed
 	d.request.mu.Unlock()
-	e.NotSent = outcome == "not_sent"
-	e.ClientCancelled = errors.Is(err, context.Canceled) || (d.request.clientContext != nil && d.request.clientContext.Err() != nil)
-	decision := scheduling.ClassifyFailure(e, *d.ticket.Failure, time.Now())
+	// A failed local preparation is not evidence against an upstream account.
+	// A dial failure after MarkSent is an attempted transport and may cool down.
+	e.NotSent = outcome == "not_sent" && transportAttempted
+	e.ClientCancelled = (errors.Is(err, context.Canceled) && !timedOut) || (d.request.clientContext != nil && d.request.clientContext.Err() != nil)
+	decision := d.classifySchedulingFailure(e)
 	if decision.Key != "" && (decision.Scope == "quota_pool" || decision.Scope == "availability_pool") && d.request.Ledger != nil {
 		d.request.Ledger.BlockFailureDomain(decision.Key)
 	}
@@ -239,4 +244,16 @@ func blockControlledGrokTeamModelLimit(ctx context.Context, account *Account, mo
 	for _, domain := range controlledAccountFailureDomains(account, model) {
 		ledger.BlockFailureDomain(domain)
 	}
+}
+
+// The account-pool selector uses one short failure circuit. Authentication,
+// quota and model-specific evidence keep their existing authoritative scope.
+func (d *controlledDispatch) classifySchedulingFailure(e scheduling.FailureEvidence) scheduling.FailureDecision {
+	d.request.mu.Lock()
+	accountPool := d.request.Policy.AccountPool
+	d.request.mu.Unlock()
+	if accountPool {
+		return scheduling.ClassifyAccountPoolFailure(e, *d.ticket.Failure, time.Now())
+	}
+	return scheduling.ClassifyFailure(e, *d.ticket.Failure, time.Now())
 }

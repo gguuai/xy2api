@@ -15,12 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type legacyOwnerControlRepo struct{ *controlledIntegrationRepo }
+type groupOwnerControlRepo struct{ *controlledIntegrationRepo }
 
-func (r legacyOwnerControlRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, group int64, platform string) ([]Account, error) {
+func (r groupOwnerControlRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, group int64, platform string) ([]Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
 }
-func (r legacyOwnerControlRepo) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+func (r groupOwnerControlRepo) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	var out []Account
 	for _, a := range r.accounts {
 		v, e := r.GetByID(ctx, a.ID)
@@ -33,40 +33,39 @@ func (r legacyOwnerControlRepo) ListSchedulableByPlatform(ctx context.Context, p
 	}
 	return out, nil
 }
-func (r legacyOwnerControlRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+func (r groupOwnerControlRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
 }
 
-func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
+func TestControlledGroupPolicyOwnerGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name, scope, action, session string
 		blocked                      bool
 	}{
 		{"account_pause", scheduling.ScopeAccount, "pause", "old-owner", true},
-		{"family_pause", scheduling.ScopeFamily, "pause", "old-owner", true},
+		{"family_pause", scheduling.ScopeFamily, "pause", "old-owner", false},
 		{"account_session_drain", scheduling.ScopeAccount, "session_drain", "old-owner", false},
 		{"family_session_drain", scheduling.ScopeFamily, "session_drain", "old-owner", false},
-		{"unregistered_session", scheduling.ScopeAccount, "session_drain", "new-owner", true},
-		{"running_legacy_unchanged", scheduling.ScopeAccount, "", "old-owner", false},
+		{"unregistered_session", scheduling.ScopeAccount, "session_drain", "new-owner", false},
+		{"running_group_policy_owner", scheduling.ScopeAccount, "", "old-owner", false},
 		{"drain_hard_health_stays_blocked", scheduling.ScopeAccount, "session_drain", "old-owner", true},
-		{"running_hard_health_legacy_fallback", scheduling.ScopeAccount, "", "old-owner", false},
+		{"running_hard_health_owner_unavailable", scheduling.ScopeAccount, "", "old-owner", true},
 		{"advanced_movable_pause", scheduling.ScopeAccount, "pause", "old-owner", true},
-		{"drain_missing_request_context", scheduling.ScopeAccount, "session_drain", "old-owner", true},
+		{"drain_missing_request_context", scheduling.ScopeAccount, "pause", "old-owner", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			control, db, p, accounts := controlledIntegration(t, false)
-			p.Enabled = false
-			_, e := control.Store.PutPolicy(context.Background(), p, p.Version)
-			require.NoError(t, e)
+			control, db, _, accounts := controlledIntegration(t, false)
+			// The production account pool is always enabled. Owner protection must hold
+			// under this real group policy, without synthesizing an obsolete legacy mode.
 			for _, a := range accounts {
 				a.Platform = PlatformOpenAI
 				a.Type = AccountTypeAPIKey
 			}
-			if tc.name == "drain_hard_health_stays_blocked" || tc.name == "running_hard_health_legacy_fallback" {
+			if tc.name == "drain_hard_health_stays_blocked" || tc.name == "running_hard_health_owner_unavailable" {
 				until := time.Now().Add(time.Hour)
 				accounts[0].RateLimitResetAt = &until
 			}
-			repo := legacyOwnerControlRepo{&controlledIntegrationRepo{db: db, accounts: []*Account{accounts[0], accounts[2]}}}
+			repo := groupOwnerControlRepo{&controlledIntegrationRepo{db: db, accounts: []*Account{accounts[0], accounts[2]}}}
 			cfg := &config.Config{}
 			cfg.Gateway.OpenAIWS.Enabled = true
 			cfg.Gateway.OpenAIWS.APIKeyEnabled = true
@@ -76,6 +75,7 @@ func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
 			svc := &OpenAIGatewayService{accountRepo: repo, cache: &schedulerTestGatewayCache{}, cfg: cfg,
 				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
 				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}), controlledScheduling: control}
+			control.concurrency = svc.concurrencyService
 			if tc.name == "advanced_movable_pause" {
 				svc.rateLimitService = newOpenAIAdvancedSchedulerRateLimitService("true")
 			}
@@ -93,7 +93,11 @@ func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
 				require.NoError(t, control.Store.SettleAttempt(ctx, old.TicketID, "completed", false))
 			}
 			if tc.action != "" {
-				_, e = control.Store.Control(ctx, scheduling.ControlCommand{AccountID: 1, Scope: tc.scope, Action: tc.action, SessionDurationSeconds: 60, SessionMaxTurns: 1})
+				_, e := control.Store.Control(ctx, scheduling.ControlCommand{AccountID: 1, Scope: tc.scope, Action: tc.action, SessionDurationSeconds: 60, SessionMaxTurns: 1})
+				require.NoError(t, e)
+			}
+			if tc.action == "pause" && tc.scope == scheduling.ScopeAccount {
+				_, e := db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
 				require.NoError(t, e)
 			}
 			selection, decision, e := svc.SelectAccountWithScheduler(ctx, &group, "resp-owned-by-a", tc.session, "test-model", nil, OpenAIUpstreamTransportAny, false)
@@ -107,14 +111,10 @@ func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
 			if selection != nil && selection.Account != nil {
 				id = selection.Account.ID
 			}
-			t.Logf("policy.enabled=false scope=%s action=%s selected=%d layer=%s error=%v", tc.scope, tc.action, id, decision.Layer, e)
+			t.Logf("group account policy scope=%s action=%s selected=%d layer=%s error=%v", tc.scope, tc.action, id, decision.Layer, e)
 			bound, be := state.GetResponseAccount(ctx, group, "resp-owned-by-a")
 			require.NoError(t, be)
-			if tc.name == "running_hard_health_legacy_fallback" {
-				require.Zero(t, bound, "ordinary legacy retains its prior binding cleanup")
-			} else {
-				require.EqualValues(t, 1, bound)
-			}
+			require.EqualValues(t, 1, bound, "paused or unhealthy strong owner must retain its response binding")
 			if tc.blocked {
 				var sends atomic.Int64
 				if id > 0 {
@@ -125,7 +125,11 @@ func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
 					t.Logf("selected owner substitute=%d actual_local_upstream_sends=%d dispatch_error=%v", id, sends.Load(), sendErr)
 				}
 				require.Zero(t, sends.Load(), "a paused strong owner must never be bypassed by dispatching B")
-				require.ErrorIs(t, e, scheduling.ErrControlBlocked)
+				if tc.name == "drain_hard_health_stays_blocked" || tc.name == "running_hard_health_owner_unavailable" {
+					require.ErrorIs(t, e, scheduling.ErrNoCandidate, "health restrictions must refuse the original owner without selecting a peer")
+				} else {
+					require.ErrorIs(t, e, scheduling.ErrControlBlocked)
+				}
 				require.Nil(t, selection)
 				if controlledRequest(ctx) != nil {
 					wrong, gateErr := control.beginDispatch(ctx, 3, 10)
@@ -136,23 +140,23 @@ func TestControlledLegacyRollbackOwnerGuard(t *testing.T) {
 			}
 			require.NoError(t, e)
 			require.NotNil(t, selection)
-			if tc.name == "running_hard_health_legacy_fallback" {
-				require.EqualValues(t, 3, id)
-				require.False(t, controlledRequest(ctx).owner)
-			} else {
-				require.EqualValues(t, 1, id)
-			}
-			require.False(t, ControlledSchedulingEnabled(ctx), "legacy must remain disabled")
+			require.EqualValues(t, 1, id)
+			require.True(t, ControlledSchedulingEnabled(ctx), "owner continuation uses the new group account policy")
+			require.True(t, controlledRequest(ctx).Policy.AccountPool)
+			require.True(t, controlledRequest(ctx).owner)
+			require.EqualValues(t, 1, controlledRequest(ctx).ownerAccountID)
 			if tc.action == "session_drain" {
 				wrong, gateErr := control.beginDispatch(ctx, 3, 10)
 				require.Nil(t, wrong)
-				require.ErrorIs(t, gateErr, scheduling.ErrControlBlocked, "a valid drain grant cannot authorize another account")
+				require.ErrorIs(t, gateErr, scheduling.ErrControlBlocked, "an existing owner binding cannot authorize another account")
 				next, e := control.beginDispatch(ctx, id, 10)
 				require.NoError(t, e)
 				require.NotNil(t, next)
 				next.Finish("not_sent", true, nil)
+				_, e = db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=1")
+				require.NoError(t, e)
 				_, e = control.Store.BeginDispatch(ctx, scheduling.DispatchRequest{RequestID: "next-turn", AccountID: 1, SessionID: "old-owner", NodeID: "test"})
-				require.ErrorIs(t, e, scheduling.ErrControlBlocked, "selection may not consume the one drain grant, admission must consume exactly once")
+				require.ErrorIs(t, e, scheduling.ErrControlBlocked, "a new turn cannot bypass the switch through a retired session grant")
 			}
 		})
 	}

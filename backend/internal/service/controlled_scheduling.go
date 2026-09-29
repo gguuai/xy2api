@@ -20,6 +20,7 @@ import (
 // eligibility rules and the PostgreSQL dispatch linearization point.
 type ControlledSchedulingService struct {
 	Store          *scheduling.PostgresStore
+	modeReader     func(context.Context) (scheduling.ModeSnapshot, error)
 	Runtime        *scheduling.Runtime
 	redis          redis.UniversalClient
 	accounts       AccountRepository
@@ -33,13 +34,18 @@ type ControlledSchedulingService struct {
 }
 
 func NewControlledSchedulingService(db *sql.DB, rdb *redis.Client, accounts AccountRepository, concurrency *ConcurrencyService) *ControlledSchedulingService {
-	s := &ControlledSchedulingService{Store: scheduling.NewPostgresStore(db), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(rdb)), redis: rdb, accounts: accounts, concurrency: concurrency, node: uuid.NewString()}
+	return newControlledSchedulingService(db, rdb, accounts, concurrency, false)
+}
+
+func newControlledSchedulingService(db *sql.DB, rdb *redis.Client, accounts AccountRepository, concurrency *ConcurrencyService, defaultGroupIncludesAll bool) *ControlledSchedulingService {
+	s := &ControlledSchedulingService{Store: scheduling.NewPostgresStoreWithDefaultGroup(db, defaultGroupIncludesAll), Runtime: scheduling.NewRuntime(scheduling.NewRedisStore(rdb)), redis: rdb, accounts: accounts, concurrency: concurrency, node: uuid.NewString()}
+	s.modeReader = s.Store.GetSchedulingMode
 	s.Store.SetCancelHook(s.cancelControlled)
 	return s
 }
 
 // Start reconciles abandoned tickets without guessing remote completion. Expired
-// tickets remain capacity-bearing UNKNOWN until an explicit observed resolution.
+// remote results remain UNKNOWN for audit; expired local holds do not consume capacity.
 func (s *ControlledSchedulingService) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
@@ -137,38 +143,33 @@ func (s *ControlledSchedulingService) loadPolicy(ctx context.Context, groupID *i
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.control = s
+	if !r.modeResolved {
+		mode := scheduling.ModeSnapshot{Mode: scheduling.ModeControlled}
+		if s.modeReader != nil {
+			var err error
+			mode, err = s.modeReader(ctx)
+			if err != nil {
+				return r, false, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
+			}
+		}
+		if !mode.Mode.Valid() {
+			return r, false, scheduling.ErrSharedState
+		}
+		r.Mode, r.modeResolved = mode, true
+	}
+	if r.Mode.Mode == scheduling.ModeSub2API {
+		r.policyLoaded = true
+		return r, false, nil
+	}
 	if r.policyLoaded {
 		return r, r.Policy.Enabled, nil
 	}
-	rec, err := s.Store.GetPolicy(ctx, derefGroupID(groupID), model)
+	group, err := s.Store.ReadGroupPolicy(ctx, derefGroupID(groupID))
 	if err != nil {
 		return r, false, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
 	}
-	var defaults *scheduling.Policy
-	if derefGroupID(groupID) != 0 {
-		global, e := s.Store.GetPolicy(ctx, 0, model)
-		if e != nil {
-			return r, false, fmt.Errorf("%w: %v", scheduling.ErrSharedState, e)
-		}
-		defaults = global.Policy
-	}
-	p := scheduling.Policy{GroupID: derefGroupID(groupID), Model: model}
-	if rec.Policy != nil {
-		p = *rec.Policy
-	} else if defaults != nil {
-		p = *defaults
-		p.GroupID = derefGroupID(groupID)
-	}
-	p = scheduling.NormalizePolicy(p)
+	p, profile := accountPoolPolicy(group, model)
 	r.Reasoning = scheduling.NormalizeReasoningLabel(r.Reasoning)
-	// Profiles inherit independently of allocation overrides; never mix models.
-	profile, ok := scheduling.ResolveProfileForTransport(p, r.Reasoning, r.ContextTokens, r.Protocol)
-	if (!ok || (profile.Transport != "" && profile.Transport != r.Protocol)) && defaults != nil {
-		profile, ok = scheduling.ResolveProfileForTransport(*defaults, r.Reasoning, r.ContextTokens, r.Protocol)
-	}
-	if !ok || (profile.Transport != "" && profile.Transport != r.Protocol) {
-		profile = scheduling.LatencyProfile{Name: "unconfigured"}
-	}
 	r.Model = model
 	r.SessionID = sessionID
 	r.Policy = p
@@ -209,6 +210,11 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 	safe := r.ReplaySafe
 	ownerID := r.ownerAccountID
 	sessionID := r.SessionID
+	auxiliary := r.Auxiliary
+	rejected := make(map[int64]bool, len(r.admissionRejected))
+	for id, blocked := range r.admissionRejected {
+		rejected[id] = blocked
+	}
 	r.mu.Unlock()
 	parent := ctx
 	ctx, stopPreparation := controlledPreparationContext(ctx, r)
@@ -246,7 +252,7 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 	backoff := snapshot.Attempts > r.lastBackoffAttempt
 	r.lastBackoffAttempt = snapshot.Attempts
 	r.mu.Unlock()
-	if backoff && snapshot.Attempts > 0 {
+	if backoff && snapshot.Attempts > 0 && !p.AccountPool {
 		capMS := 50 << min(snapshot.Attempts-1, 2)
 		wait := time.Duration(rand.IntN(capMS+1)) * time.Millisecond
 		if !snapshot.Deadline.IsZero() {
@@ -270,24 +276,11 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 	byID := map[int64]*Account{}
 	loads := make([]AccountWithConcurrency, 0, len(accounts))
 	ids := make([]int64, 0, len(accounts))
-	for _, a := range accounts {
-		if a == nil {
-			continue
-		}
-		byID[a.ID] = a
-		loads = append(loads, AccountWithConcurrency{ID: a.ID, MaxConcurrency: a.Concurrency})
-		ids = append(ids, a.ID)
-	}
-	active, err := s.Store.AccountActiveCounts(ctx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
-	}
-	loadMap := map[int64]*AccountLoadInfo{}
-	if s.concurrency != nil {
-		loadMap, err = s.concurrency.GetAccountsLoadBatchFresh(ctx, loads)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
-		}
+	candidates := make([]*Account, 0, len(accounts))
+	hardEligible := make(map[int64]bool, len(accounts))
+	rules := make(map[int64]scheduling.AccountRule, len(p.Accounts))
+	for _, rule := range p.Accounts {
+		rules[rule.AccountID] = rule
 	}
 	for _, a := range accounts {
 		if a == nil {
@@ -297,27 +290,57 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		if _, skip := excluded[a.ID]; skip {
 			ok = false
 		}
-		admit, e := s.Store.CanAdmitControl(ctx, a.ID, sessionID)
-		if e != nil {
-			return nil, e
-		}
-		if !admit {
-			ok = false
-		}
 		priority := a.Priority
-		for _, rule := range p.Accounts {
-			if rule.AccountID == a.ID && rule.Priority != nil {
+		if rule, configured := rules[a.ID]; configured {
+			if rule.Priority != nil {
 				priority = *rule.Priority
 			}
+			if p.AccountPool && rule.Weight == 0 {
+				ok = false
+			}
 		}
-		if ledger.CanAttempt(a.ID, priority, time.Now(), safe) != nil {
+		if rejected[a.ID] || ledger.CanAttempt(a.ID, priority, time.Now(), safe) != nil {
 			ok = false
 		}
-		failureEligible, failureDomains, e := s.controlledFailureCandidate(ctx, a, p.Model)
-		if e != nil {
-			return nil, e
+		// Remove impossible winners before any shared-state preflight. An unrelated
+		// unsupported/disabled/tried account must not delay or fail this request.
+		if p.AccountPool && (!ok || (ownerID > 0 && ownerID != a.ID)) {
+			continue
 		}
-		ok = ok && failureEligible
+		byID[a.ID], hardEligible[a.ID] = a, ok
+		candidates = append(candidates, a)
+		loads = append(loads, AccountWithConcurrency{ID: a.ID, MaxConcurrency: a.Concurrency})
+		ids = append(ids, a.ID)
+	}
+	active := map[int64]int{}
+	var err error
+	if !auxiliary {
+		active, err = s.Store.AccountActiveCounts(ctx, ids)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
+		}
+	}
+	loadMap := map[int64]*AccountLoadInfo{}
+	if s.concurrency != nil && !auxiliary {
+		loadMap, err = s.concurrency.GetAccountsLoadBatchFresh(ctx, loads)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", scheduling.ErrSharedState, err)
+		}
+	}
+	admissions, err := s.candidateAdmissions(ctx, candidates, p.Model, sessionID, p.AccountPool)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range candidates {
+		admission := admissions[a.ID]
+		ok := hardEligible[a.ID] && admission.controlAllowed
+		if !admission.controlAllowed && p.AccountPool && ownerID == a.ID {
+			return nil, scheduling.ErrControlBlocked
+		}
+		if p.AccountPool && !ok {
+			continue
+		}
+		ok = ok && admission.failureEligible
 		used := active[a.ID]
 		if loadMap[a.ID] != nil && loadMap[a.ID].CurrentConcurrency > used {
 			used = loadMap[a.ID].CurrentConcurrency
@@ -326,11 +349,7 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		if a.ParentAccountID != nil {
 			family = *a.ParentAccountID
 		}
-		healthIdentity, healthErr := s.controlledHealthIdentity(ctx, a)
-		if healthErr != nil {
-			return nil, healthErr
-		}
-		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: ok, CapacityAvailable: a.Concurrency <= 0 || used < a.Concurrency, FailureDomain: fmt.Sprint(family), FailureDomains: failureDomains, HealthIdentity: healthIdentity, HealthModel: a.GetMappedModel(p.Model)})
+		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: ok, CapacityAvailable: a.Concurrency <= 0 || used < a.Concurrency, FailureDomain: fmt.Sprint(family), FailureDomains: admission.failureDomains, HealthIdentity: admission.healthIdentity, HealthModel: a.GetMappedModel(p.Model)})
 	}
 	queueUntil := time.Now().Add(time.Duration(p.QueueWaitMS) * time.Millisecond)
 	if !snapshot.Deadline.IsZero() && snapshot.Deadline.Before(queueUntil) {
@@ -338,7 +357,13 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 	}
 	for iteration := 0; iteration < 128; iteration++ {
 		req.Now = time.Now()
-		d, e := s.Runtime.Select(ctx, req)
+		var d scheduling.Decision
+		var e error
+		if auxiliary {
+			d, e = s.Runtime.SelectAuxiliary(ctx, req)
+		} else {
+			d, e = s.Runtime.Select(ctx, req)
+		}
 		if e != nil {
 			if errors.Is(e, scheduling.ErrCapacity) && p.Overflow == scheduling.OverflowWait && time.Now().Before(queueUntil) {
 				delay := time.Until(queueUntil)
@@ -374,7 +399,7 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 				iteration--
 				continue
 			}
-			if errors.Is(e, scheduling.ErrNoCandidate) && p.AllDegraded != scheduling.AllDegradedFailFast && !snapshot.Deadline.IsZero() {
+			if !p.AccountPool && errors.Is(e, scheduling.ErrNoCandidate) && p.AllDegraded != scheduling.AllDegradedFailFast && !snapshot.Deadline.IsZero() {
 				at, readErr := s.Runtime.NextRecovery(ctx, req)
 				if readErr != nil {
 					return nil, readErr
@@ -402,6 +427,14 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		}
 		if fresh == nil {
 			s.releaseDecisionContext(ctx, d)
+			if p.AccountPool {
+				for i := range req.Candidates {
+					if req.Candidates[i].AccountID == a.ID {
+						req.Candidates[i].HardEligible = false
+					}
+				}
+				continue
+			}
 			return nil, scheduling.ErrNoCandidate
 		}
 		ok, _ := eligible(fresh)
@@ -415,7 +448,7 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 			continue
 		}
 		var release func()
-		if acquire {
+		if acquire && !auxiliary {
 			if s.concurrency == nil {
 				s.releaseDecisionContext(ctx, d)
 				return nil, scheduling.ErrSharedState
@@ -468,10 +501,10 @@ func (s *ControlledSchedulingService) selectAccount(ctx context.Context, r *Cont
 		}
 		r.mu.Lock()
 		r.Decision = d
-		r.decisionPending = true
+		r.decisionPending = !auxiliary
 		r.fallback = fallback
 		r.mu.Unlock()
-		return &AccountSelectionResult{Account: fresh, Acquired: acquire, ReleaseFunc: release}, nil
+		return &AccountSelectionResult{Account: fresh, Acquired: acquire && !auxiliary, ReleaseFunc: release}, nil
 	}
 	return nil, fmt.Errorf("scheduler_selection_iteration_limit")
 }

@@ -616,6 +616,40 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 		}
 	}
 
+	if s.controlledScheduling != nil {
+		r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, "", "")
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			r.mu.Lock()
+			r.Auxiliary = true
+			r.mu.Unlock()
+			pool := make([]*Account, 0, len(accounts))
+			for i := range accounts {
+				pool = append(pool, &accounts[i])
+			}
+			eligible := func(a *Account) (bool, string) {
+				if a == nil || !a.IsSchedulable() || a.Platform != PlatformGemini || rank(a) >= 999 {
+					return false, "endpoint_unavailable"
+				}
+				simpleUngrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+				if !simpleUngrouped && !openAIStickyAccountMatchesGroup(a, groupID) {
+					return false, "group_mismatch"
+				}
+				if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
+					return false, "quota_exhausted"
+				}
+				return true, "eligible"
+			}
+			selected, err := s.controlledScheduling.selectAccount(ctx, r, pool, eligible, nil, false)
+			if err != nil {
+				return nil, err
+			}
+			return selected.Account, nil
+		}
+	}
+
 	var selected *Account
 	for i := range accounts {
 		acc := &accounts[i]

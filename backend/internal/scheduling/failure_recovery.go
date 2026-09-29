@@ -80,7 +80,7 @@ func (s *PostgresStore) PermitFailureRecovery(ctx context.Context, id int64, r F
 		return empty, ErrInvalidControl
 	}
 	var active bool
-	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM scheduling_attempts WHERE state<>'settled' AND $1=ANY(failure_probe_keys))", r.GateKey).Scan(&active); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM scheduling_attempts WHERE "+admissionOccupancySQL("")+" AND $1=ANY(failure_probe_keys))", r.GateKey).Scan(&active); err != nil {
 		return empty, err
 	}
 	if active {

@@ -28,6 +28,11 @@ func opaqueID() string {
 func digest(s string) string   { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:16]) }
 func scopeKey(p Policy) string { return fmt.Sprintf("%d:%s", p.GroupID, p.Model) }
 func profileKey(model string, p LatencyProfile, reasoning, bucket, transport string) string {
+	if p.Name == AccountPoolProfileName {
+		// Changing a waiting limit must not reset a failure cooldown. Model here
+		// is an upstream capability/health scope, never an administrator rule.
+		return digest("account_pool_health_v1:" + model)
+	}
 	raw, _ := json.Marshal([]string{"semantic_v4", strconv.FormatInt(p.HealthRevision, 10), model, p.Name, reasoning, bucket, transport, strconv.FormatInt(p.ContextMinTokens, 10), strconv.FormatInt(p.ContextMaxTokens, 10), strconv.FormatInt(p.HealthThresholdMS, 10), strconv.FormatInt(p.RecoveryThresholdMS, 10), strconv.FormatInt(p.AttemptTimeoutMS, 10)})
 	return digest(string(raw))
 }
@@ -214,7 +219,7 @@ for _,k in ipairs(KEYS) do if redis.call('GET',k)==ARGV[1] then redis.call('DEL'
 `
 
 func (s *RedisStore) acquireProbe(ctx context.Context, r SelectionRequest, accountID int64, sharedPool bool) (string, error) {
-	key := "xy2:scheduling:probe:{" + profileKey(r.Policy.Model, r.Profile, r.Reasoning, r.ContextBucket, r.Transport) + "}"
+	key := probePoolKey(r, accountID)
 	id := opaqueID()
 	ttl := r.Profile.AttemptTimeoutMS + 10000
 	if ttl < 60000 {

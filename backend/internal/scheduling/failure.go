@@ -33,6 +33,7 @@ type FailureEvidence struct {
 	OwnerPinned          bool
 	NotSent              bool
 	FirstSemanticTimeout bool
+	AttemptTimeout       bool // A non-streaming attempt reached its full limit; no TTFT evidence.
 	// These require authenticated structured evidence, never HTTP status or URL.
 	SharedKind  string
 	SharedPool  string
@@ -95,11 +96,9 @@ func CredentialFingerprint(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 func (a FailureAdmission) AccountKey() string {
-	ownerID := a.CredentialOwnerID
-	if ownerID <= 0 {
-		ownerID = a.AccountID
-	}
-	return failureKey("deployment", "credential", strconv.FormatInt(ownerID, 10), a.Credential)
+	// Authentication failures are scoped to the selected logical account. A
+	// shared credential or an optional shadow relationship never disables peers.
+	return failureKey("deployment", "credential", strconv.FormatInt(a.AccountID, 10), a.Credential)
 }
 func (a FailureAdmission) ModelKey() string {
 	identity := a.HealthIdentity

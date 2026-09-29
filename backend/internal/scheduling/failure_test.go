@@ -64,7 +64,7 @@ func domainTicket(t *testing.T, s *PostgresStore, id int64) DispatchTicket {
 	require.NoError(t, e)
 	return ticket
 }
-func TestFailureDomainsPostgresUnknownProbeAndSharedScope(t *testing.T) {
+func TestFailureDomainsPostgresUnknownProbeRemainsAccountLocal(t *testing.T) {
 	s, db := isolatedControlStore(t)
 	ctx := context.Background()
 	for _, id := range []int64{1, 3} {
@@ -77,15 +77,15 @@ func TestFailureDomainsPostgresUnknownProbeAndSharedScope(t *testing.T) {
 	require.NoError(t, s.ApplyFailureFeedback(ctx, ticket.TicketID, d, false))
 	peer, e := s.InspectFailureDomains(ctx, 3, "model-a")
 	require.NoError(t, e)
-	require.False(t, peer.Eligible)
+	require.True(t, peer.Eligible, "retired shared configuration must not block another account")
 	_, e = db.Exec("UPDATE scheduling_failure_gates SET ready_after=NOW()-INTERVAL '1 second' WHERE gate_key=$1", d.Key)
 	require.NoError(t, e)
 	probe := domainTicket(t, s, 1)
 	require.Contains(t, probe.Failure.ProbeVersions, d.Key)
 	// Redis can be absent/flushed or its lease expired: persisted PG occupancy wins.
-	a, e := s.FreezeFailureAdmission(ctx, 3, "model-a")
+	a, e := s.FreezeFailureAdmission(ctx, 1, "model-a")
 	require.NoError(t, e)
-	r := testDispatch(3, "")
+	r := testDispatch(1, "")
 	r.Failure = &a
 	_, e = s.BeginDispatch(ctx, r)
 	require.ErrorIs(t, e, ErrFailureDomainBlocked)
@@ -120,7 +120,8 @@ func TestFailureDomainsPostgresStaleCredentialAndMembership(t *testing.T) {
 	require.NoError(t, s.ApplyFailureFeedback(ctx, old.TicketID, shared, false))
 	state, e = s.InspectFailureDomains(ctx, 3, "model-a")
 	require.NoError(t, e)
-	require.True(t, state.Eligible)
+	require.False(t, state.Eligible, "retired shared membership edits cannot erase an account-local cooldown")
+	require.Equal(t, "account_model", shared.Scope)
 }
 func TestFailureDomainsPostgresConcurrentRecovery(t *testing.T) {
 	s, db := isolatedControlStore(t)
@@ -138,7 +139,7 @@ func TestFailureDomainsPostgresConcurrentRecovery(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
-	for _, id := range []int64{1, 3} {
+	for _, id := range []int64{1, 1} {
 		a, e := s.FreezeFailureAdmission(ctx, id, "model-a")
 		require.NoError(t, e)
 		wg.Add(1)

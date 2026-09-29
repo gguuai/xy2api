@@ -58,9 +58,9 @@ func TestFailureProbeSettlementFailureRollsBackFeedbackAudit(t *testing.T) {
 	require.ErrorContains(t, err, "injected first probe settlement failure")
 	require.ErrorIs(t, s.ApplyFailureFeedback(ctx, probe.TicketID, completed, true), ErrAttemptIdentity)
 
-	peer, err := s.FreezeFailureAdmission(ctx, 3, "model-a")
+	peer, err := s.FreezeFailureAdmission(ctx, 1, "model-a")
 	require.NoError(t, err)
-	peerRequest := testDispatch(3, "")
+	peerRequest := testDispatch(1, "")
 	peerRequest.Failure = &peer
 	_, err = s.BeginDispatch(ctx, peerRequest)
 	require.ErrorIs(t, err, ErrFailureDomainBlocked)
@@ -119,7 +119,7 @@ func TestFailureProbeSettlementFailureRollsBackFeedbackAudit(t *testing.T) {
 	t.Log("compensation: attempt=settled/completed, recovery confirmed, feedback audits=1, peer dispatch=admitted, replay=0")
 }
 
-func TestFailureUnknownIndependent429ClosesSharedDomainBeforeSettlement(t *testing.T) {
+func TestFailureUnknownIndependent429ClosesAccountDomainBeforeSettlement(t *testing.T) {
 	s, db := isolatedControlStore(t)
 	ctx := context.Background()
 	for _, id := range []int64{1, 3} {
@@ -130,7 +130,7 @@ func TestFailureUnknownIndependent429ClosesSharedDomainBeforeSettlement(t *testi
 	require.Empty(t, ticket.Failure.ProbeVersions)
 	require.NoError(t, s.MarkAttemptUnknown(ctx, ticket.TicketID))
 	decision := ClassifyFailure(FailureEvidence{Trusted: true, Status: 429, SharedKind: "quota_pool", SharedPool: "org-a", ReplaySafe: true, ClientCancelled: true}, *ticket.Failure, time.Now())
-	require.Equal(t, "quota_pool", decision.Scope)
+	require.Equal(t, "account_model", decision.Scope)
 	require.Equal(t, "cooldown", decision.Effect)
 	require.Equal(t, "stop", decision.Retry)
 	require.NoError(t, s.RecordFailureIntent(ctx, ticket.TicketID, decision, false))
@@ -145,14 +145,14 @@ func TestFailureUnknownIndependent429ClosesSharedDomainBeforeSettlement(t *testi
 	var gateClosed bool
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT ready_after>NOW() FROM scheduling_failure_gates WHERE gate_key=$1", decision.Key).Scan(&gateClosed))
 	require.True(t, gateClosed)
-	peer, err := s.FreezeFailureAdmission(ctx, 3, "model-a")
+	peer, err := s.FreezeFailureAdmission(ctx, 1, "model-a")
 	require.NoError(t, err)
-	peerRequest := testDispatch(3, "")
+	peerRequest := testDispatch(1, "")
 	peerRequest.Failure = &peer
 	_, err = s.BeginDispatch(ctx, peerRequest)
 	require.ErrorIs(t, err, ErrFailureDomainBlocked)
 	var audits int
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT count(*) FROM scheduling_failure_audit WHERE ticket_id=$1 AND action='failure_feedback' AND evidence->>'completed'='false'", ticket.TicketID).Scan(&audits))
 	require.Equal(t, 1, audits)
-	t.Log("independent trusted 429: attempt=unknown, terminal intent=absent, shared cooldown=closed, failure audits=1, peer dispatch=domain blocked")
+	t.Log("independent trusted 429: attempt=unknown, terminal intent=absent, account cooldown=closed, failure audits=1, peer dispatch=domain blocked")
 }

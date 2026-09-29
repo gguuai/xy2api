@@ -34,6 +34,9 @@ type ControlledRequest struct {
 	SessionID          string
 	ReplaySafe         bool
 	policyLoaded       bool
+	Mode               scheduling.ModeSnapshot
+	modeResolved       bool
+	Auxiliary          bool
 	Policy             scheduling.Policy
 	Profile            scheduling.LatencyProfile
 	Ledger             *scheduling.AttemptLedger
@@ -49,6 +52,7 @@ type ControlledRequest struct {
 	finish             func()
 	currentAttemptID   string
 	gateRejections     int
+	admissionRejected  map[int64]bool // Unsent gate failures; never count as upstream attempts.
 	lastBackoffAttempt int
 }
 
@@ -330,7 +334,7 @@ func (r *ControlledRequest) Close() {
 
 // Install one ledger before body parsing and queues. WS adapters start a new
 // request context for each response.create, rather than sharing a connection one.
-func ControlledSchedulingMiddleware() gin.HandlerFunc {
+func ControlledSchedulingMiddleware(readers ...func(context.Context) (scheduling.ModeSnapshot, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		protocol := "http"
 		if strings.Contains(c.Request.URL.Path, "messages") {
@@ -344,6 +348,22 @@ func ControlledSchedulingMiddleware() gin.HandlerFunc {
 		}
 		ctx := NewControlledRequestContext(c.Request.Context(), protocol)
 		r := controlledRequest(ctx)
+		r.Auxiliary = schedulingAuxiliaryRequest(c.Request)
+		if len(readers) > 0 && readers[0] != nil {
+			readCtx, readDone := context.WithTimeout(ctx, 3*time.Second)
+			mode, err := readers[0](readCtx)
+			readDone()
+			if err != nil || !mode.Mode.Valid() {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "service_unavailable", "message": "Scheduling mode is temporarily unavailable"}})
+				return
+			}
+			r.Mode, r.modeResolved = mode, true
+			if mode.Mode == scheduling.ModeSub2API {
+				c.Request = c.Request.WithContext(ctx)
+				c.Next()
+				return
+			}
+		}
 		c.Header("X-Scheduling-Request-Id", r.ID)
 		c.Request = c.Request.WithContext(ctx)
 		if c.Request.Body != nil {

@@ -60,7 +60,7 @@ type controlledDispatch struct {
 }
 
 func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, accountID int64, concurrency int) (dispatch *controlledDispatch, dispatchErr error) {
-	if s == nil || controlledRequest(ctx) == nil {
+	if s == nil || controlledRequest(ctx) == nil || Sub2APISchedulingEnabled(ctx) {
 		return nil, nil
 	}
 	r := controlledRequest(ctx)
@@ -77,6 +77,19 @@ func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, account
 	owner := r.owner
 	ownerAccountID := r.ownerAccountID
 	r.mu.Unlock()
+	// No transport can have been sent before beginDispatch returns. Any failed
+	// preparation must release its unused selection, including owner readmission
+	// whose recovery probe was acquired without the normal selection path.
+	defer func() {
+		if dispatchErr != nil && dispatch == nil && (decision.AccountID == 0 || decision.AccountID == accountID) && (!owner || ownerAccountID == 0 || ownerAccountID == accountID) {
+			s.releaseDecisionContext(ctx, decision)
+			r.mu.Lock()
+			if r.Decision.ReservationID == decision.ReservationID && r.Decision.ProbeToken == decision.ProbeToken {
+				r.decisionPending = false
+			}
+			r.mu.Unlock()
+		}
+	}()
 	if r.clientContext != nil && r.clientContext.Err() != nil {
 		return nil, r.clientContext.Err()
 	}
@@ -135,14 +148,42 @@ func (s *ControlledSchedulingService) beginDispatch(ctx context.Context, account
 		r.mu.Lock()
 		healthObservation = scheduling.Observation{AccountID: accountID, Model: admission.Model, Profile: r.Profile, Reasoning: r.Reasoning, Transport: r.Protocol, ContextBucket: controlledBucket(r), HealthIdentity: admission.HealthIdentity}
 		r.mu.Unlock()
-		if decision.HealthFence != nil && decision.HealthFence.Model != healthObservation.Model {
-			// Adapters may canonicalize after the candidate model mapping.
-			// Re-admit the actual upstream model from its own health record;
-			// never transfer predicted-model health to this model.
-			decision.HealthFence = nil
+		var fence scheduling.HealthFence
+		var err error
+		if p.AccountPool && (decision.HealthFence == nil || decision.HealthFence.Model != healthObservation.Model || decision.HealthFence.HealthIdentity != healthObservation.HealthIdentity) {
+			boundAccountID := int64(0)
+			if owner && ownerAccountID == accountID {
+				boundAccountID = ownerAccountID
+			}
+			readmitted, readmitErr := s.Runtime.ReadmitAccountPoolHealth(ctx, decision, healthObservation, boundAccountID)
+			if readmitErr != nil {
+				// Readmission owns compensation. An unsent rejection must not
+				// be selected repeatedly through its still-healthy client alias.
+				r.mu.Lock()
+				r.decisionPending = false
+				r.mu.Unlock()
+				if !owner && !errors.Is(readmitErr, scheduling.ErrSharedState) && (errors.Is(readmitErr, scheduling.ErrHealthSelectionStale) || errors.Is(readmitErr, scheduling.ErrCapacity)) {
+					return nil, s.invalidateControlledSelection(ctx, r, scheduling.Decision{AccountID: accountID})
+				}
+				return nil, readmitErr
+			}
+			decision = readmitted
 			decision.Reason += "_actual_model_revalidated"
+			fence = *decision.HealthFence
+			r.mu.Lock()
+			r.Decision = decision
+			r.decisionPending = decision.ReservationID != "" || decision.ProbeToken != ""
+			r.mu.Unlock()
+		} else {
+			if !p.AccountPool && decision.HealthFence != nil && decision.HealthFence.Model != healthObservation.Model {
+				// Adapters may canonicalize after the candidate model mapping.
+				// Re-admit the actual upstream model from its own health record;
+				// never transfer predicted-model health to this model.
+				decision.HealthFence = nil
+				decision.Reason += "_actual_model_revalidated"
+			}
+			fence, err = s.Runtime.FreezeSelectedHealth(ctx, accountID, healthObservation.Model, healthObservation.Profile, healthObservation.Reasoning, healthObservation.ContextBucket, healthObservation.Transport, healthObservation.HealthIdentity, decision)
 		}
-		fence, err := s.Runtime.FreezeSelectedHealth(ctx, accountID, healthObservation.Model, healthObservation.Profile, healthObservation.Reasoning, healthObservation.ContextBucket, healthObservation.Transport, healthObservation.HealthIdentity, decision)
 		if err != nil {
 			if errors.Is(err, scheduling.ErrHealthSelectionStale) && !owner && p.Mode != scheduling.ModePin {
 				return nil, s.invalidateControlledSelection(ctx, r, decision)
@@ -311,8 +352,9 @@ func (d *controlledDispatch) MarkSent() (sendErr error) {
 	return nil
 }
 
-// Called with d.mu held. Non-streaming completion is bounded by the overall
-// budget, but can never become a fabricated first-semantic-output observation.
+// Called with d.mu held. Each account-pool attempt, including non-streaming
+// work, is bounded by its waiting limit and the remaining request budget. A
+// non-streaming completion never fabricates first-semantic-output evidence.
 func (d *controlledDispatch) startFirstOutputTimerLocked() {
 	if d.timer != nil {
 		d.timer.Stop()
@@ -329,7 +371,7 @@ func (d *controlledDispatch) startFirstOutputTimerLocked() {
 	}
 	now := time.Now()
 	window := ledger.Remaining(now)
-	if d.semanticObservable {
+	if d.semanticObservable || p.AccountPool {
 		window = ledger.AttemptWindow(now, d.viableFallback)
 	}
 	if window <= 0 && ledger.Snapshot().Deadline.IsZero() {
@@ -337,7 +379,7 @@ func (d *controlledDispatch) startFirstOutputTimerLocked() {
 	}
 	deadline := now.Add(window)
 	configured := time.Duration(profile.AttemptTimeoutMS) * time.Millisecond
-	if d.semanticObservable && configured > 0 {
+	if (d.semanticObservable || p.AccountPool) && configured > 0 {
 		fullAttemptDeadline := d.started.Add(configured)
 		if fullAttemptDeadline.Before(deadline) {
 			deadline = fullAttemptDeadline
@@ -350,6 +392,9 @@ func (d *controlledDispatch) startFirstOutputTimerLocked() {
 	}
 	d.attemptDeadline = deadline
 	d.clipped = !d.semanticObservable || configured <= 0 || deadline.Before(d.started.Add(configured))
+	if p.AccountPool {
+		d.clipped = configured <= 0 || deadline.Before(d.started.Add(configured))
+	}
 	window = time.Until(deadline)
 	if window <= 0 {
 		window = time.Nanosecond
@@ -468,6 +513,15 @@ func (d *controlledDispatch) CommitOutput(frame []byte) {
 }
 
 func (d *controlledDispatch) maintainLease() {
+	// Capacity may be reused after the persisted lease expires. Independently
+	// cancel this local transport at that deadline, including while renewal is
+	// blocked, rather than continuing an unleased stream indefinitely.
+	leaseExpired := make(chan struct{})
+	leaseTimer := time.AfterFunc(time.Until(d.ticket.LeaseUntil), func() {
+		d.cancel()
+		close(leaseExpired)
+	})
+	defer leaseTimer.Stop()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	ticks := 0
@@ -475,12 +529,25 @@ func (d *controlledDispatch) maintainLease() {
 		select {
 		case <-d.done:
 			return
+		case <-leaseExpired:
+			return
 		case <-ticker.C:
 			ticks++
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			if ticks%30 == 0 {
+				renewalStarted := time.Now()
 				if err := d.service.Store.RenewAttempt(ctx, d.ticket.TicketID, 2*time.Minute); err != nil {
 					slog.Warn("scheduling lease renewal uncertain", "attempt_id", d.ticket.TicketID, "error", err)
+				} else if leaseTimer.Stop() {
+					// Starting before the database call is conservative with respect
+					// to the server's NOW(); response latency cannot extend our lease.
+					leaseTimer.Reset(time.Until(renewalStarted.Add(2 * time.Minute)))
+				} else {
+					// An expired local holder cannot revive itself after losing its
+					// slot, even if a delayed renewal response arrives successfully.
+					d.cancel()
+					cancel()
+					return
 				}
 			}
 			requested, e := d.service.Store.AttemptCancellationRequested(ctx, d.ticket.TicketID)
@@ -503,6 +570,7 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 		}
 		sent, semantic, answer, firstEvent, started := d.sent, d.semantic, d.answer, d.firstEvent, d.started
 		timeout, clipped, upstreamFailure, explicitExcluded, terminal, retryAfter, status := d.timeout, d.clipped, d.upstreamFailure, d.excluded, d.terminal, d.retryAfter, d.status
+		semanticObservable := d.semanticObservable
 		d.mu.Unlock()
 		close(d.done)
 		d.cancel()
@@ -517,6 +585,9 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 		excluded := explicitExcluded || d.adminCancelled.Load() || (r.clientContext != nil && r.clientContext.Err() != nil) || (errors.Is(err, context.Canceled) && !timeout) || (timeout && clipped)
 		if timeout {
 			outcome = "first_output_timeout"
+			if p.AccountPool && !semanticObservable {
+				outcome = "attempt_timeout"
+			}
 			if clipped {
 				outcome = "first_output_budget_exhausted"
 			}
@@ -581,10 +652,11 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			}
 		}
 
-		if knownTerminal {
-			if releaseErr := (scheduling.RedisFailureDomains{Client: d.service.redis}).Release(ctx, d.ticket); releaseErr != nil {
-				slog.Warn("scheduling domain lease release pending", "attempt_id", d.ticket.TicketID, "error", releaseErr)
-			}
+		// Redis coordinates a live local attempt. PG retains the bounded unknown
+		// hold and authoritative cooldown, so cancelling a local attempt must not
+		// leave a longer Redis lease delaying the next permitted recovery probe.
+		if releaseErr := (scheduling.RedisFailureDomains{Client: d.service.redis}).Release(ctx, d.ticket); releaseErr != nil {
+			slog.Warn("scheduling domain lease release pending", "attempt_id", d.ticket.TicketID, "error", releaseErr)
 		}
 		if fd.Class == "authentication" || fd.Class == "rate_limit" || fd.Class == "model_capability" || fd.Class == "invalid_request" {
 			excluded = true
@@ -598,13 +670,13 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			o.At = time.Now()
 			o.HasSemanticOutput = !semantic.IsZero()
 			o.Completed = completed
-			o.FirstOutputTimeout = timeout && !clipped
-			o.AttributableFailure = !excluded && (upstreamFailure || (err != nil && !timeout))
+			o.FirstOutputTimeout = timeout && !clipped && semanticObservable
+			o.AttributableFailure = !excluded && (upstreamFailure || (err != nil && !timeout) || (p.AccountPool && timeout && !clipped && !semanticObservable))
 			o.Excluded = excluded
 			o.RetryAfter = retryAfter
 			if !semantic.IsZero() {
 				o.TTFT = semantic.Sub(started)
-			} else if timeout {
+			} else if timeout && semanticObservable {
 				o.TTFT = time.Since(started)
 			}
 			if current, e := d.service.Store.WithCurrentFailureIdentity(ctx, d.ticket.Failure, func() error { return d.service.Runtime.Observe(ctx, o) }); e != nil {
@@ -612,9 +684,7 @@ func (d *controlledDispatch) Finish(outcome string, remoteTerminal bool, err err
 			} else if !current {
 				slog.Info("scheduling stale terminal observation ignored", "attempt_id", d.ticket.TicketID)
 			}
-			if knownTerminal {
-				_ = d.service.Runtime.ReleaseProbe(ctx, d.decision.ProbeToken)
-			}
+			_ = d.service.Runtime.ReleaseProbe(ctx, d.decision.ProbeToken)
 		}
 		trace := SchedulingAttemptTrace{AccountID: d.ticket.AccountID, AttemptID: d.ticket.TicketID, Priority: d.decision.Priority, Reason: d.decision.Reason, Started: started, Outcome: outcome, StopReason: outcome, MetricVersion: SchedulingMetricVersion, PolicyVersion: p.Version}
 		ms := func(t time.Time) *int64 {
@@ -675,6 +745,16 @@ func (u *controlledHTTPUpstream) DoWithTLS(req *http.Request, proxy string, acco
 	})
 }
 func (s *ControlledSchedulingService) roundTrip(req *http.Request, accountID int64, concurrency int, send func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+	if controlledAuxiliaryRequest(req.Context()) && ControlledSchedulingEnabled(req.Context()) {
+		allowed, err := s.Store.CanAdmitControl(req.Context(), accountID, "")
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, scheduling.ErrControlBlocked
+		}
+		return send(req)
+	}
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		return send(req)
 	}

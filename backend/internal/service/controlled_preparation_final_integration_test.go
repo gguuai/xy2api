@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-"net/http/httptest"
+	"net/http/httptest"
 
-"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +81,7 @@ func seedControlledActualModelHealth(t *testing.T, s *ControlledSchedulingServic
 
 func TestControlledFinalModelRevalidatesHealthAndProbeCapacity(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
-		name := "unknown_single_probe"
+		name := "half_open_single_probe"
 		if blocked {
 			name = "open_rejected"
 		}
@@ -98,6 +98,8 @@ func TestControlledFinalModelRevalidatesHealthAndProbeCapacity(t *testing.T) {
 			seedControlledActualModelHealth(t, s, r, a, "predicted-A", scheduling.HealthHealthy)
 			if blocked {
 				seedControlledActualModelHealth(t, s, r, a, "actual-B", scheduling.HealthOpen)
+			} else {
+				seedControlledActualModelHealth(t, s, r, a, "actual-B", scheduling.HealthHalfOpen)
 			}
 			controlledPick(t, s, ctx, r, accounts[:1])
 			require.Equal(t, "predicted-A", r.Decision.HealthFence.Model)
@@ -112,12 +114,12 @@ func TestControlledFinalModelRevalidatesHealthAndProbeCapacity(t *testing.T) {
 				d := req.Context().Value(controlledDispatchContextKey{}).(*controlledDispatch)
 				require.Equal(t, "actual-B", d.healthObservation.Model)
 				require.Equal(t, "actual-B", d.healthObservation.Fence.Model)
-				require.True(t, d.decision.Probe, "predicted HEALTHY cannot bypass actual UNKNOWN capacity")
-				require.Equal(t, scheduling.HealthUnknown, d.healthObservation.Fence.State)
+				require.True(t, d.decision.Probe, "predicted HEALTHY cannot bypass actual HALF_OPEN capacity")
+				require.Equal(t, scheduling.HealthHalfOpen, d.healthObservation.Fence.State)
 				ctx2, r2 := controlledIntegrationRequest(t, s)
 				controlledPick(t, s, ctx2, r2, accounts[:1])
 				_, secondErr := s.roundTrip(request(ctx2), a.ID, 10, func(*http.Request) (*http.Response, error) {
-					t.Fatal("second UNKNOWN probe must not be sent")
+					t.Fatal("second HALF_OPEN probe must not be sent")
 					return nil, nil
 				})
 				require.Error(t, secondErr)
@@ -134,6 +136,9 @@ func TestControlledFinalModelRevalidatesHealthAndProbeCapacity(t *testing.T) {
 				var tickets int
 				require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scheduling_attempts").Scan(&tickets))
 				require.Zero(t, tickets)
+				peer := controlledPick(t, s, ctx, r, accounts)
+				require.NotEqual(t, a.ID, peer.ID, "actual-model rejection must not repeatedly select the same healthy alias")
+				require.Zero(t, r.Ledger.Snapshot().Attempts, "unsent rejection cannot consume an upstream attempt")
 				return
 			}
 			require.NoError(t, err)

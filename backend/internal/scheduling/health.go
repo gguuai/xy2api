@@ -9,6 +9,9 @@ const cooldownMS int64 = 30000
 // window is not a lifetime for proven availability: missing TTFT never restores
 // the cold-start concurrency cap. Redis record expiry remains a separate reset.
 func FreshHealth(s HealthSnapshot, now time.Time, profile LatencyProfile) HealthSnapshot {
+	if profile.Name == AccountPoolProfileName {
+		return freshAccountPoolHealth(s, now)
+	}
 	if s.State == "" {
 		s.State = HealthUnknown
 	}
@@ -35,6 +38,9 @@ func FreshHealth(s HealthSnapshot, now time.Time, profile LatencyProfile) Health
 // claim whole-request success or promote an account before a later failed event.
 // RedisStore supplies generation validation and atomic attempt-id deduplication.
 func AdvanceHealth(old HealthSnapshot, o Observation) HealthSnapshot {
+	if o.Profile.Name == AccountPoolProfileName {
+		return advanceAccountPoolHealth(old, o)
+	}
 	if o.Excluded || (!o.Completed && !o.AttributableFailure && !o.FirstOutputTimeout) {
 		return old
 	}

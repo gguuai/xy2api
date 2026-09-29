@@ -8,7 +8,6 @@ import audit from './audit'
 import promptAudit from './promptAudit'
 import plugins from './plugins'
 import scheduling from './scheduling'
-import failureDomains from './failureDomains'
 
 export default {
   ...overview,
@@ -21,5 +20,4 @@ export default {
   ...promptAudit,
   ...plugins,
   ...scheduling,
-  ...failureDomains,
 }

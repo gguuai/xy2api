@@ -148,7 +148,7 @@ func (v *allocationInspection) peek(options []Decision) (Decision, error) {
 	return chosen, nil
 }
 func (s *RedisStore) inspectProbeAvailable(ctx context.Context, req SelectionRequest, id int64, shared bool) (bool, error) {
-	key := "xy2:scheduling:probe:{" + profileKey(req.Policy.Model, req.Profile, req.Reasoning, req.ContextBucket, req.Transport) + "}"
+	key := probePoolKey(req, id)
 	keys := []string{key + ":account:" + strconv.FormatInt(id, 10)}
 	if shared {
 		keys = append(keys, key+":pool")
@@ -163,6 +163,9 @@ func (s *RedisStore) inspectProbeAvailable(ctx context.Context, req SelectionReq
 // InspectSelection predicts the next physical-selection candidate from current
 // shared balances. It does not guarantee admission after the snapshot changes.
 func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (SelectionIntrospection, error) {
+	if req.Policy.AccountPool {
+		return r.inspectAccountPool(ctx, req)
+	}
 	out := SelectionIntrospection{SnapshotAt: req.Now}
 	if out.SnapshotAt.IsZero() {
 		out.SnapshotAt = time.Now()
@@ -250,6 +253,10 @@ func (r *Runtime) InspectSelection(ctx context.Context, req SelectionRequest) (S
 
 // NextRecovery cannot revive paused, zero-weight, excluded or already-tried accounts.
 func (r *Runtime) NextRecovery(ctx context.Context, req SelectionRequest) (time.Time, error) {
+	if req.Policy.AccountPool {
+		// Account pools never hold a user request waiting for a cooling account.
+		return time.Time{}, nil
+	}
 	if r == nil || r.store == nil {
 		return time.Time{}, ErrSharedState
 	}
@@ -313,6 +320,9 @@ func inspectionIncrement(value string, delta float64) string {
 // needs one token for itself plus one for the fallback. Initial dispatch can earn
 // one credit only if this logical request has not already claimed its initial key.
 func (r *Runtime) CanRetryAfterDispatch(ctx context.Context, p Policy, logicalID string, currentRetry bool) (bool, error) {
+	if p.AccountPool {
+		return true, nil
+	}
 	if r == nil || r.store == nil || r.store.client == nil {
 		return false, ErrSharedState
 	}

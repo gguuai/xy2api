@@ -51,30 +51,8 @@ func (s *OpenAIGatewayService) prepareControlledWSTurn(ctx context.Context, c *g
 	return ctx, err
 }
 
-// A pause removes admission, never ownership. A bounded session grant can relax
-// only the manual schedulable bit; all other account health checks still apply.
-func (s *OpenAIGatewayService) controlledOwnerForContinuation(ctx context.Context, account *Account) (*Account, bool) {
-	if account == nil {
-		return nil, false
-	}
-	if account.Schedulable {
-		return account, true
-	}
-	if s == nil || s.controlledScheduling == nil {
-		return account, false
-	}
-	r := controlledRequest(ctx)
-	if r == nil {
-		return account, false
-	}
-	r.mu.Lock()
-	sessionID := r.SessionID
-	r.mu.Unlock()
-	allowed, err := s.controlledScheduling.Store.CanContinueSession(ctx, account.ID, sessionID)
-	if err != nil || !allowed {
-		return account, false
-	}
-	copy := *account
-	copy.Schedulable = true
-	return &copy, true
+// Generic account disable always applies, including to continuation owners.
+// Retired session grants cannot bypass the account switch for a new turn.
+func (s *OpenAIGatewayService) controlledOwnerForContinuation(_ context.Context, account *Account) (*Account, bool) {
+	return account, account != nil && account.Schedulable
 }

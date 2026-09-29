@@ -9,12 +9,19 @@ import (
 )
 
 type PostgresStore struct {
-	db         *sql.DB
-	hookMu     sync.RWMutex
-	cancelHook CancelHook
+	db                      *sql.DB
+	defaultGroupIncludesAll bool
+	hookMu                  sync.RWMutex
+	cancelHook              CancelHook
 }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
+
+// NewPostgresStoreWithDefaultGroup freezes the application run mode for both
+// runtime and administrator reads. Standard mode never expands group 0.
+func NewPostgresStoreWithDefaultGroup(db *sql.DB, includeAll bool) *PostgresStore {
+	return &PostgresStore{db: db, defaultGroupIncludesAll: includeAll}
+}
 func (s *PostgresStore) SetCancelHook(h CancelHook) {
 	s.hookMu.Lock()
 	s.cancelHook = h
@@ -201,18 +208,8 @@ func (s *PostgresStore) Control(ctx context.Context, cmd ControlCommand) (Contro
 	if err != nil {
 		return c, err
 	}
-	// Family resume must not release a child's independent pause. No health column is cleared.
-	if c.Scope == ScopeAccount {
-		if _, err = tx.ExecContext(ctx, "UPDATE accounts SET schedulable=$2,updated_at=NOW() WHERE id=$1", c.SubjectID, cmd.Action == "resume"); err != nil {
-			return c, err
-		}
-	}
-	// Transactional outbox refreshes legacy snapshots; it is not the admission authority.
-	if c.Scope == ScopeAccount {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO scheduler_outbox(event_type,account_id) VALUES('account_changed',$1)", c.SubjectID); err != nil {
-			return c, err
-		}
-	}
+	// Controlled pause is a mode-local admission decision. Never mutate the
+	// generic account enabled bit: Sub2API and generic admin disable remain independent.
 	// Persist cancellation under the admission lock. A later resume may change
 	// the control epoch before another node polls, but cannot erase this ticket's intent.
 	if cmd.Action == "force_stop" {

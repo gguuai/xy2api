@@ -1078,7 +1078,7 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 // ProvideControlledSchedulingService installs shared policy and dispatch gates
 // after normal services exist. Constructors used by isolated tests stay stable.
 func ProvideControlledSchedulingService(db *sql.DB, rdb *redis.Client, accounts AccountRepository, concurrency *ConcurrencyService, openai *OpenAIGatewayService, gateway *GatewayService, gemini *GeminiMessagesCompatService, antigravity *AntigravityGatewayService) *ControlledSchedulingService {
-	s := NewControlledSchedulingService(db, rdb, accounts, concurrency)
+	s := newControlledSchedulingService(db, rdb, accounts, concurrency, openai.cfg != nil && openai.cfg.RunMode == config.RunModeSimple)
 	// Initialize the read-only proxy circuit pointer before services become concurrent.
 	openai.getOpenAIProxyStreamCircuit()
 	s.SetExplainEligibility(openai.ExplainSchedulingEligibility, gateway.ExplainSchedulingEligibility)
