@@ -279,8 +279,8 @@ func TestHealthCooldownAndRecovery(t *testing.T) {
 	if s.State != HealthHealthy {
 		t.Fatal(s)
 	}
-	if FreshHealth(s, time.UnixMilli(s.UpdatedAtMS).Add(121*time.Second), p).State != HealthUnknown {
-		t.Fatal("stale healthy account not unknown")
+	if FreshHealth(s, time.UnixMilli(s.UpdatedAtMS).Add(121*time.Second), p).State != HealthHealthy {
+		t.Fatal("latency sample age discarded proven availability")
 	}
 }
 func TestAllSlowCensoredEvidence(t *testing.T) {
@@ -519,8 +519,11 @@ func TestUnknownProbeAndRedisHealth(t *testing.T) {
 	if e = rt.ReleaseSelection(ctx, d); e != nil {
 		t.Fatal(e)
 	}
-	for i := 0; i < 5; i++ {
-		if e = rt.Observe(ctx, Observation{AccountID: 1, Model: "m", Profile: p, At: time.Now(), TTFT: time.Second, HasSemanticOutput: true, Completed: true}); e != nil {
+	now := time.Now()
+	for i := 0; i < 9; i++ {
+		fence, err := rt.FreezeHealth(ctx, 1, "m", p, "", "", "")
+		require.NoError(t, err)
+		if e = rt.Observe(ctx, Observation{AttemptID: opaqueID(), Fence: &fence, AccountID: 1, Model: "m", Profile: p, At: now.Add(time.Duration(i) * 45 * time.Second), TTFT: time.Second, HasSemanticOutput: true, Completed: true}); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -609,7 +612,7 @@ func TestRecoveringSelectionUsesProbeLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = rt.store.client.Set(ctx, HealthRedisKey(1, req.Policy.Model, req.Profile, "", "", ""), raw, 0).Err(); err != nil {
+	if err = rt.store.client.HSet(ctx, HealthRedisKey(1, req.Policy.Model, req.Profile, "", "", ""), "snapshot", raw).Err(); err != nil {
 		t.Fatal(err)
 	}
 	d, err := rt.Select(ctx, req)
@@ -738,7 +741,7 @@ func TestPinAndRetryDoNotConsumeOrdinaryAllocation(t *testing.T) {
 	_ = rt.CommitSelection(ctx, next)
 }
 
-func TestFailureDomainExclusionAndFreshRecoveryEvidence(t *testing.T) {
+func TestFailureDomainExclusionAndStableRecoveryQualifications(t *testing.T) {
 	now := time.Now()
 	l := NewAttemptLedger(DefaultRetryPolicy(), profile(), now, time.Time{})
 	l.BlockFailureDomain("credential-family-1")
@@ -758,8 +761,8 @@ func TestFailureDomainExclusionAndFreshRecoveryEvidence(t *testing.T) {
 	}
 	old := HealthSnapshot{State: HealthRecovering, GoodStreak: 2, UpdatedAtMS: now.Add(-121 * time.Second).UnixMilli(), ChangedAtMS: now.Add(-2 * time.Minute).UnixMilli()}
 	next := AdvanceHealth(old, Observation{Profile: profile(), At: now, TTFT: time.Second, HasSemanticOutput: true, Completed: true})
-	if next.GoodStreak != 1 || next.RecoveryStage != 0 {
-		t.Fatal("stale evidence advanced recovery", next)
+	if next.GoodStreak != 0 || next.RecoveryStage != 1 {
+		t.Fatal("short latency window erased recovery qualifications", next)
 	}
 }
 
@@ -836,7 +839,9 @@ func TestObserveOnlyStillProtectsAgainstFailures(t *testing.T) {
 	now := time.Now()
 	p := LatencyProfile{Name: "unconfigured"}
 	for _, failed := range []bool{true, false, true, false, true} {
-		if e := rt.Observe(ctx, Observation{AccountID: 1, Model: "unconfigured", Profile: p, At: now, Completed: !failed, AttributableFailure: failed}); e != nil {
+		fence, err := rt.FreezeHealth(ctx, 1, "unconfigured", p, "", "", "")
+		require.NoError(t, err)
+		if e := rt.Observe(ctx, Observation{AttemptID: opaqueID(), Fence: &fence, AccountID: 1, Model: "unconfigured", Profile: p, At: now, Completed: !failed, AttributableFailure: failed}); e != nil {
 			t.Fatal(e)
 		}
 		now = now.Add(time.Millisecond)

@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
@@ -133,6 +134,7 @@ function mountView() {
 
 describe('admin AccountsView usage windows hint', () => {
   beforeEach(() => {
+  useSchedulingModeStore().document = { mode: 'sub2api', version: 1 }
     localStorage.clear()
 
     listAccounts.mockReset()

@@ -17,7 +17,7 @@ import (
 )
 
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
-func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (_ *ForwardResult, retErr error) {
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	sessionID := getSessionID(c)
@@ -84,6 +84,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
@@ -126,6 +127,10 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("read upstream response: %w", err)
+		}
+
+		if err := validateControlledNonstreamResponse(resp, respBody, "messages"); err != nil {
+			return nil, err
 		}
 
 		// 提取 usage

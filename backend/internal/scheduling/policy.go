@@ -94,11 +94,11 @@ func ValidatePolicy(raw Policy) error {
 	}
 	names := map[string]bool{}
 	for _, v := range p.Profiles {
-		if v.Name == "" || names[v.Name] {
+		if strings.TrimSpace(v.Name) == "" || names[strings.TrimSpace(v.Name)] {
 			return fmt.Errorf("profile names must be nonempty and unique")
 		}
-		names[v.Name] = true
-		if v.ContextMinTokens < 0 || (v.ContextMaxTokens > 0 && v.ContextMaxTokens <= v.ContextMinTokens) {
+		names[strings.TrimSpace(v.Name)] = true
+		if v.ContextMinTokens < 0 || v.ContextMaxTokens < 0 || (v.ContextMaxTokens > 0 && v.ContextMaxTokens <= v.ContextMinTokens) {
 			return fmt.Errorf("invalid context range")
 		}
 		if v.ObserveOnly() {
@@ -110,6 +110,9 @@ func ValidatePolicy(raw Policy) error {
 		if v.TotalBudgetMS > 1800000 {
 			return fmt.Errorf("profile total budget exceeds 30 minutes")
 		}
+	}
+	if diagnostics := ProfileAmbiguities(p); len(diagnostics) > 0 {
+		return fmt.Errorf("ambiguous profiles %q and %q: same-specificity selectors overlap", diagnostics[0].Profiles[0], diagnostics[0].Profiles[1])
 	}
 	r := p.Retry
 	if r.Mode != "bounded_same_tier_first" && r.Mode != "exhaust_same_tier" {
@@ -131,12 +134,13 @@ func ResolveProfile(p Policy, reasoning string, contextTokens int64) (LatencyPro
 	return ResolveProfileForTransport(p, reasoning, contextTokens, "")
 }
 func ResolveProfileForTransport(p Policy, reasoning string, contextTokens int64, transport string) (LatencyProfile, bool) {
+	reasoning = NormalizeReasoningLabel(reasoning)
 	transport = CanonicalTransport(transport)
 	var best LatencyProfile
 	bestScore := -1
 	for _, v := range p.Profiles {
 		v.Transport = CanonicalTransport(v.Transport)
-		if v.Reasoning != "" && v.Reasoning != reasoning {
+		if v.Reasoning != "" && NormalizeReasoningLabel(v.Reasoning) != reasoning {
 			continue
 		}
 		if v.Transport != "" && v.Transport != transport {
@@ -148,22 +152,55 @@ func ResolveProfileForTransport(p Policy, reasoning string, contextTokens int64,
 		if contextTokens >= 0 && (contextTokens < v.ContextMinTokens || (v.ContextMaxTokens > 0 && contextTokens >= v.ContextMaxTokens)) {
 			continue
 		}
-		score := 0
-		if v.Reasoning != "" {
-			score += 4
-		}
-		if v.Transport != "" {
-			score += 2
-		}
-		if v.ContextMinTokens > 0 || v.ContextMaxTokens > 0 {
-			score++
-		}
+		score := profileSpecificity(v)
 		if score > bestScore {
 			best = v
 			bestScore = score
 		}
 	}
 	return best, bestScore >= 0
+}
+
+// ProfileDiagnostic also describes pre-existing ambiguous policies without
+// silently changing the historical first-match tie behavior at read time.
+type ProfileDiagnostic struct {
+	Code     string   `json:"code"`
+	Profiles []string `json:"profiles"`
+}
+
+func profileSpecificity(v LatencyProfile) int {
+	score := 0
+	if v.Reasoning != "" {
+		score += 4
+	}
+	if CanonicalTransport(v.Transport) != "" {
+		score += 2
+	}
+	if v.ContextMinTokens > 0 || v.ContextMaxTokens > 0 {
+		score++
+	}
+	return score
+}
+
+// ProfileAmbiguities uses the same canonical selectors and half-open intervals
+// as ResolveProfileForTransport. Different specificity is an intentional override.
+func ProfileAmbiguities(p Policy) []ProfileDiagnostic {
+	var out []ProfileDiagnostic
+	for i, a := range p.Profiles {
+		for _, b := range p.Profiles[i+1:] {
+			if profileSpecificity(a) != profileSpecificity(b) ||
+				(a.Reasoning != "" && NormalizeReasoningLabel(a.Reasoning) != NormalizeReasoningLabel(b.Reasoning)) ||
+				CanonicalTransport(a.Transport) != CanonicalTransport(b.Transport) {
+				continue
+			}
+			if (a.ContextMaxTokens > 0 && a.ContextMaxTokens <= b.ContextMinTokens) ||
+				(b.ContextMaxTokens > 0 && b.ContextMaxTokens <= a.ContextMinTokens) {
+				continue
+			}
+			out = append(out, ProfileDiagnostic{Code: "same_specificity_overlap", Profiles: []string{a.Name, b.Name}})
+		}
+	}
+	return out
 }
 func ContextBucket(tokens int64) string {
 	if tokens < 0 {

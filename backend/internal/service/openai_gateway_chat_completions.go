@@ -372,6 +372,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 
 	// 6. Build upstream request
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	if !clientStream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 	cancelUpstream := func() {}
 	if clientStream {
 		upstreamCtx, cancelUpstream = context.WithCancel(upstreamCtx)
@@ -547,7 +550,8 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	billingModel string,
 	upstreamModel string,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	requestID := resp.Header.Get("x-request-id")
 
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID)
@@ -556,8 +560,10 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	}
 
 	if finalResponse == nil {
+		err := fmt.Errorf("upstream stream ended without terminal event")
+		rejectControlledNonstreamResponse(resp, err)
 		writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
-		return nil, fmt.Errorf("upstream stream ended without terminal event")
+		return nil, err
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -617,6 +623,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// When the terminal event has an empty output array, reconstruct from
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
+	if err := validateOpenAICompatBufferedResponse(resp, finalResponse); err != nil {
+		return nil, err
+	}
 
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
 

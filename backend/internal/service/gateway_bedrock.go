@@ -386,9 +386,13 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
-) (*ClaudeUsage, error) {
+) (_ *ClaudeUsage, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateControlledNonstreamResponse(resp, body, "messages"); err != nil {
 		return nil, err
 	}
 

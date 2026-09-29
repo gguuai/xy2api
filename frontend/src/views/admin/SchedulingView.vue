@@ -1,251 +1,317 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-7xl space-y-5 p-4 sm:p-6">
+    <div v-if="!modeStore.isControlled" class="mx-auto max-w-3xl p-6">
+      <section class="scheduling-card space-y-3" aria-live="polite">
+        <template v-if="modeStore.isSub2API"><h1 class="text-lg font-semibold">{{ t('admin.scheduling.modeSettings.inactive') }}</h1><p class="text-sm text-gray-600 dark:text-dark-300">{{ t('admin.scheduling.modeSettings.inactiveHint') }}</p><RouterLink to="/admin/settings?tab=gateway" class="btn btn-primary">{{ t('admin.scheduling.modeSettings.settings') }}</RouterLink></template>
+        <template v-else><p :role="modeStore.failed ? 'alert' : 'status'">{{ modeStore.failed ? t('admin.scheduling.modeSettings.loadFailed') : t('common.loading') }}</p><button v-if="modeStore.failed" type="button" class="btn btn-secondary" @click="modeStore.fetch(true)">{{ t('common.refresh') }}</button></template>
+      </section>
+    </div>
+    <div v-else ref="pageRoot" class="mx-auto max-w-7xl space-y-5 p-4 sm:p-6">
       <header class="flex flex-wrap items-start justify-between gap-3">
-        <div><h1 class="text-xl font-semibold">{{ t('admin.scheduling.title') }}</h1><p class="mt-1 text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.description') }}</p></div>
-        <RouterLink to="/admin/accounts" class="btn btn-secondary">{{ t('admin.scheduling.manageAccounts') }}</RouterLink>
+        <div><h1 class="text-xl font-semibold">{{ t('admin.scheduling.title') }}</h1><p class="mt-1 text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.groupPolicy.description') }}</p></div>
+        <div class="flex flex-wrap items-center gap-2"><RouterLink to="/admin/accounts" class="btn btn-secondary">{{ t('admin.scheduling.manageAccounts') }}</RouterLink><button type="button" class="btn btn-primary" :disabled="!policy || loading || saving || conflicted || !dirty" data-testid="save-policy-top" @click="save">{{ saving ? t('common.saving') : t('common.save') }}</button></div>
       </header>
       <section class="scheduling-card">
-        <div class="grid items-end gap-3 sm:grid-cols-3">
-          <label class="scheduling-label">{{ t('admin.scheduling.group') }}<select v-model.number="scopeGroup" class="input mt-1" :disabled="saving" data-testid="scope-group"><option :value="0">{{ t('admin.scheduling.modelDefault') }}</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
-          <label class="scheduling-label">{{ t('admin.scheduling.model') }}<input v-model.trim="scopeModel" class="input mt-1" :disabled="saving" :placeholder="t('admin.scheduling.modelPlaceholder')" data-testid="scope-model" @keyup.enter="loadPolicy"></label>
-          <button class="btn btn-secondary" :disabled="loading || saving || !scopeModel" data-testid="load-policy" @click="loadPolicy">{{ loading ? t('common.loading') : t('admin.scheduling.loadPolicy') }}</button>
+        <div class="flex flex-wrap items-end gap-3">
+          <label class="scheduling-label min-w-0 flex-1 sm:max-w-sm">{{ t('admin.scheduling.group') }}
+            <select :value="scopeGroup" class="input mt-1" :disabled="saving || groupsLoading" data-testid="scope-group" @change="changeGroup">
+              <option :value="-1" disabled>{{ t('admin.scheduling.groupPolicy.selectGroup') }}</option>
+              <option :value="0">{{ t('admin.scheduling.groupPolicy.' + (defaultScope === 'all_accounts' ? 'allAccounts' : 'ungrouped')) }}</option>
+              <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+            </select>
+          </label>
+          <button class="btn btn-secondary" :disabled="groupsLoading || loading || saving" data-testid="reload-policy" @click="requestReload">{{ t('admin.scheduling.groupPolicy.reload') }}</button>
+          <span v-if="policy" class="text-xs text-gray-500">{{ t('admin.scheduling.version', { value: loadedVersion }) }}</span>
         </div>
-        <p class="mt-3 text-xs text-gray-500">{{ t('admin.scheduling.precedence') }}</p>
+        <p class="mt-3 text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.groupPolicy.scopeHint') }}</p><p v-if="policy && !configured" class="mt-2 text-sm text-gray-600 dark:text-dark-300">{{ t('admin.scheduling.groupPolicy.defaultNote') }}</p>
       </section>
       <p v-if="error" role="alert" class="rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{{ error }}</p>
-      <p v-if="notice" role="status" class="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">{{ notice }}</p>
+      <p v-if="notice" ref="noticeElement" role="status" class="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">{{ notice }}</p>
+      <div v-if="loading" role="status" class="scheduling-card space-y-3" :aria-label="t('common.loading')"><div class="h-5 w-40 rounded bg-gray-100 dark:bg-dark-700"></div><div v-for="row in 3" :key="row" class="h-12 rounded bg-gray-100 dark:bg-dark-700"></div><span class="sr-only">{{ t('common.loading') }}</span></div>
+      <details v-if="migrationWarnings.length" class="text-sm text-gray-600 dark:text-dark-300"><summary class="cursor-pointer">{{ t('admin.scheduling.groupPolicy.historyNotes') }}</summary><ul class="mt-2 list-inside list-disc"><li v-for="warning in migrationWarnings" :key="warning.code">{{ warning.message }}</li></ul></details>
       <form v-if="policy" class="space-y-5" @submit.prevent="save">
-        <fieldset :disabled="saving" class="space-y-5">
-        <section class="scheduling-card">
-          <div class="flex flex-wrap items-center justify-between gap-3"><h2 class="font-semibold">{{ t('admin.scheduling.routing') }}</h2><span class="text-xs text-gray-500">{{ t('admin.scheduling.version', { value: loadedVersion }) }}</span></div>
-          <p v-if="inheritedPolicyVersion !== null" class="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-950/30 dark:text-blue-300" data-testid="inherited-policy">{{ t('admin.scheduling.inheritedPolicy', { version: inheritedPolicyVersion }) }}</p>
-          <label class="mt-4 flex items-center gap-2 text-sm font-medium"><input v-model="policy.enabled" type="checkbox" data-testid="policy-enabled">{{ t('admin.scheduling.enablePolicy') }}</label>
-          <p class="mt-2 text-sm" :class="policy.enabled ? 'text-primary-600' : 'text-gray-500'" data-testid="mode-status">{{ policy.enabled ? t('admin.scheduling.enabledHint') : t('admin.scheduling.legacyHint') }}</p>
-          <div class="mt-4 grid gap-4 sm:grid-cols-3">
-            <label class="scheduling-label">{{ t('admin.scheduling.mode') }}<select v-model="policy.mode" class="input mt-1" data-testid="policy-mode"><option v-for="mode in modes" :key="mode" :value="mode">{{ t('admin.scheduling.modes.' + mode) }}</option></select></label>
-            <label class="scheduling-label">{{ t('admin.scheduling.overflow') }}<select v-model="policy.overflow" class="input mt-1"><option value="immediate">{{ t('admin.scheduling.immediate') }}</option><option value="wait">{{ t('admin.scheduling.wait') }}</option></select></label>
-            <label class="scheduling-label">{{ t('admin.scheduling.allDegraded') }}<select v-model="policy.all_degraded" class="input mt-1"><option v-for="mode in degradedModes" :key="mode" :value="mode">{{ t('admin.scheduling.degradedModes.' + mode) }}</option></select></label>
-          </div>
-          <label v-if="policy.overflow === 'wait'" class="scheduling-label mt-4 block max-w-xs">{{ t('admin.scheduling.queueWait') }}<input :value="policy.queue_wait_ms / 1000" type="number" min="0.001" step="0.001" class="input mt-1" @input="policy.queue_wait_ms = milliseconds($event)"></label>
-          <div v-if="policy.mode === 'pin'" class="mt-4 grid gap-3 sm:grid-cols-2">
-            <label class="scheduling-label">{{ t('admin.scheduling.pinAccount') }}<select v-model.number="policy.pin_account_id" class="input mt-1"><option :value="0">{{ t('admin.scheduling.selectAccount') }}</option><option v-for="account in scopedAccounts" :key="account.id" :value="account.id">{{ account.name }} (#{{ account.id }})</option></select></label>
-            <label class="flex items-center gap-2 text-sm"><input v-model="policy.pin_fallback" type="checkbox">{{ t('admin.scheduling.pinFallback') }}</label>
-          </div>
-        </section>
-
-        <section class="scheduling-card">
-          <h2 class="font-semibold">{{ t('admin.scheduling.accountRules') }}</h2>
-          <p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.accountRulesHint') }}</p>
-          <div class="mt-4 flex flex-wrap gap-2">
-            <select v-model.number="addAccountID" class="input min-w-0 flex-1" :aria-label="t('admin.scheduling.selectAccount')" data-testid="add-account-select"><option :value="0">{{ t('admin.scheduling.selectAccount') }}</option><option v-for="account in availableAccounts" :key="account.id" :value="account.id">{{ account.name }} (#{{ account.id }})</option></select>
-            <button type="button" class="btn btn-secondary" :disabled="!addAccountID" data-testid="add-account" @click="addAccount">{{ t('admin.scheduling.addAccount') }}</button>
-          </div>
-          <div v-if="policy.accounts.length" class="mt-4 overflow-x-auto">
-            <table class="w-full text-left text-sm"><thead><tr class="border-b border-gray-200 dark:border-dark-600"><th class="p-2">{{ t('admin.scheduling.account') }}</th><th class="p-2">{{ t('admin.scheduling.priority') }}</th><th class="p-2">{{ t('admin.scheduling.weight') }}</th><th class="p-2">{{ t('admin.scheduling.hardConcurrency') }}</th><th v-if="policy.mode === 'fill_first'" class="p-2">{{ t('admin.scheduling.fillOrder') }}</th><th class="p-2">{{ t('admin.scheduling.controlTitle') }}</th><th class="p-2"><span class="sr-only">{{ t('common.delete') }}</span></th></tr></thead>
-              <tbody><tr v-for="(rule, index) in policy.accounts" :key="rule.account_id" class="border-b border-gray-100 dark:border-dark-700">
-                <td class="p-2"><div class="font-medium">{{ accountName(rule.account_id) }}</div><span class="text-xs text-gray-500">#{{ rule.account_id }}</span></td>
-                <td class="p-2"><input :value="rule.priority ?? ''" type="number" step="1" class="input w-28" :aria-label="t('admin.scheduling.priority')" :placeholder="String(accountsByID.get(rule.account_id)?.priority ?? '')" @input="setPriority(rule, $event)"><div class="mt-1 text-xs text-gray-500">{{ t('admin.scheduling.inheritPriority') }}</div></td>
-                <td class="p-2"><input v-model.number="rule.traffic_weight" type="number" min="0" step="1" class="input w-24" :aria-label="t('admin.scheduling.weight')"><span v-if="rule.traffic_weight === 0" class="mt-1 block text-xs text-amber-600">{{ t('admin.scheduling.zeroWeight') }}</span></td>
-                <td class="p-2">{{ accountsByID.get(rule.account_id)?.concurrency ?? '—' }}<div class="text-xs text-gray-500">{{ t('admin.scheduling.editConcurrencyHint') }}</div></td>
-                <td v-if="policy.mode === 'fill_first'" class="p-2"><input v-model.number="rule.fill_order" type="number" step="1" class="input w-24" :aria-label="t('admin.scheduling.fillOrder')"></td>
-                <td class="p-2"><button type="button" class="btn btn-secondary whitespace-nowrap" @click="openControl(rule.account_id)">{{ t('admin.scheduling.controlTitle') }}</button><div v-if="controls[rule.account_id]" class="mt-1 text-xs">{{ t('admin.scheduling.states.' + controls[rule.account_id].state) }} · {{ controls[rule.account_id].active_attempts }}</div></td>
-                <td class="p-2"><button type="button" class="text-red-600" :aria-label="t('common.delete') + ' ' + accountName(rule.account_id)" @click="policy.accounts.splice(index, 1)">{{ t('common.delete') }}</button></td>
-              </tr></tbody>
-            </table>
-          </div>
-          <p class="mt-3 text-xs text-gray-500">{{ t('admin.scheduling.ratioHint') }}</p>
-        </section>
-
-        <section class="scheduling-card">
-          <div class="flex flex-wrap justify-between gap-2"><h2 class="font-semibold">{{ t('admin.scheduling.latencyProfiles') }}</h2><button type="button" class="btn btn-secondary" data-testid="add-profile" @click="addProfile">{{ t('admin.scheduling.addProfile') }}</button></div>
-          <p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.latencyHint') }}</p>
-          <p class="mt-2 text-xs text-gray-500" data-testid="protocol-sampling-hint">{{ t('admin.scheduling.protocolSamplingHint') }}</p>
-          <p v-if="!policy.profiles.length && !fallbackProfiles.length" class="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-950/30 dark:text-blue-300" data-testid="observe-only">{{ t('admin.scheduling.observeOnly') }}</p>
-          <div v-if="fallbackProfiles.length" class="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-950/30 dark:text-blue-300" data-testid="inherited-profiles">
-            <p>{{ t('admin.scheduling.inheritedProfiles', { version: globalDefaults?.version }) }}</p>
-            <div class="mt-2 overflow-x-auto"><table class="w-full text-left text-xs"><thead><tr><th class="py-1 pr-3">{{ t('admin.scheduling.profileName') }}</th><th class="py-1 pr-3">{{ t('admin.scheduling.protocol') }}</th><th class="py-1 pr-3">{{ t('admin.scheduling.reasoning') }}</th><th v-for="key in latencyKeys" :key="key" class="py-1 pr-3">{{ t('admin.scheduling.latency.' + key) }}</th></tr></thead><tbody><tr v-for="profile in fallbackProfiles" :key="profile.name"><td class="py-1 pr-3">{{ profile.name }}</td><td class="py-1 pr-3">{{ profile.transport ? protocolLabel(profile.transport) : t('admin.scheduling.anyProtocol') }}</td><td class="py-1 pr-3">{{ profile.reasoning || t('admin.scheduling.anyReasoning') }}</td><td v-for="key in latencyKeys" :key="key" class="py-1 pr-3">{{ profile[key] / 1000 }}</td></tr></tbody></table></div>
-          </div>
-          <fieldset v-for="(profile, index) in policy.profiles" :key="index" class="mt-4 rounded-xl border border-gray-200 p-4 dark:border-dark-600">
-            <legend class="px-2 text-sm font-medium">{{ profile.name || t('admin.scheduling.profile') }}</legend>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <label class="scheduling-label">{{ t('admin.scheduling.profileName') }}<input v-model.trim="profile.name" class="input mt-1"></label>
-              <label class="scheduling-label">{{ t('admin.scheduling.reasoning') }}<input v-model.trim="profile.reasoning" class="input mt-1" :placeholder="t('admin.scheduling.anyReasoning')"></label>
-              <label class="scheduling-label">{{ t('admin.scheduling.protocol') }}<select v-model="profile.transport" class="input mt-1" :data-testid="'profile-' + index + '-transport'"><option value="">{{ t('admin.scheduling.anyProtocol') }}</option><option v-for="protocol in protocols" :key="protocol" :value="protocol">{{ protocolLabel(protocol) }}</option></select></label>
-              <label class="scheduling-label">{{ t('admin.scheduling.contextMin') }}<input v-model.number="profile.context_min_tokens" type="number" min="0" step="1" class="input mt-1"></label>
-              <label class="scheduling-label">{{ t('admin.scheduling.contextMax') }}<input v-model.number="profile.context_max_tokens" type="number" min="0" step="1" class="input mt-1"></label>
+        <fieldset :disabled="saving || loading || !modeStore.isControlled" class="min-w-0 space-y-5">
+          <section class="scheduling-card">
+            <h2 class="font-semibold">{{ t('admin.scheduling.groupPolicy.accountTitle') }}</h2>
+            <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.groupPolicy.accountHint') }}</p>
+            <div class="mt-4 flex flex-wrap items-end gap-3">
+              <label class="scheduling-label min-w-40 flex-1">{{ t('admin.scheduling.groupPolicy.search') }}<input v-model.trim="accountSearch" class="input mt-1" type="search" data-testid="account-search"></label>
+              <label v-if="selectedAccounts.length" class="scheduling-label w-36">{{ t('admin.scheduling.groupPolicy.batchPriority') }}<input v-model="batchPriority" class="input mt-1" type="number" step="1" :placeholder="t('admin.scheduling.groupPolicy.noChange')" data-testid="batch-priority"></label>
+              <label v-if="selectedAccounts.length" class="scheduling-label w-36">{{ t('admin.scheduling.groupPolicy.batchWeight') }}<input v-model="batchWeight" class="input mt-1" type="number" min="0" max="1000000" step="1" :placeholder="t('admin.scheduling.groupPolicy.noChange')" data-testid="batch-weight"></label>
+              <label class="flex w-full items-center gap-2 text-sm sm:hidden"><input type="checkbox" :checked="allVisibleSelected" data-testid="select-visible-mobile" @change="selectVisible">{{ t('admin.scheduling.groupPolicy.selectVisible') }}</label>
+              <button v-if="selectedAccounts.length" type="button" class="btn btn-secondary" :disabled="batchPriority === '' && batchWeight === ''" data-testid="apply-batch" @click="applyBatch">{{ t('admin.scheduling.groupPolicy.applyBatch', { count: selectedAccounts.length }) }}</button><button v-if="selectedAccounts.length" type="button" class="btn btn-secondary" @click="selectedAccounts = []">{{ t('admin.scheduling.groupPolicy.clearSelection') }}</button>
             </div>
-            <div class="mt-4 grid gap-3 sm:grid-cols-5"><label v-for="key in latencyKeys" :key="key" class="scheduling-label">{{ t('admin.scheduling.latency.' + key) }}<input :value="profile[key] / 1000" type="number" min="0" step="0.001" class="input mt-1" :data-testid="'profile-' + index + '-' + key" @input="profile[key] = milliseconds($event)"></label></div>
-            <div class="mt-3 flex flex-wrap justify-between gap-2"><button type="button" class="text-sm text-primary-600" @click="deriveRecovery(profile)">{{ t('admin.scheduling.deriveRecovery') }}</button><button type="button" class="text-sm text-red-600" @click="policy.profiles.splice(index, 1)">{{ t('common.delete') }}</button></div>
-          </fieldset>
-          <p class="mt-3 text-xs text-gray-500">{{ t('admin.scheduling.healthDefaults') }}</p>
-        </section>
-
-        <section class="scheduling-card">
-          <h2 class="font-semibold">{{ t('admin.scheduling.retry') }}</h2><p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.retryHint') }}</p>
-          <div class="mt-4 grid gap-3 sm:grid-cols-3"><label v-for="key in retryNumberKeys" :key="key" class="scheduling-label">{{ t('admin.scheduling.retryFields.' + key) }}<input v-model.number="policy.retry[key]" type="number" :min="key === 'max_after_timeout' ? 0 : 1" step="1" class="input mt-1" :data-testid="'retry-' + key"></label></div>
-          <div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="scheduling-label">{{ t('admin.scheduling.sameTierMode') }}<select v-model="policy.retry.mode" class="input mt-1"><option value="bounded_same_tier_first">{{ t('admin.scheduling.boundedSameTier') }}</option><option value="exhaust_same_tier">{{ t('admin.scheduling.exhaustSameTier') }}</option></select></label><label class="scheduling-label">{{ t('admin.scheduling.switchMargin') }}<input v-model.number="policy.retry.switch_margin_ms" type="number" min="0" step="1" class="input mt-1"></label></div>
-          <div class="mt-4 flex flex-wrap gap-5 text-sm"><label class="flex items-center gap-2"><input v-model="policy.retry.cross_tier" type="checkbox">{{ t('admin.scheduling.crossTier') }}</label><label class="flex items-center gap-2"><input v-model="policy.retry.reserve_fallback" type="checkbox">{{ t('admin.scheduling.reserveFallback') }}</label></div>
-          <p v-if="policy.retry.mode === 'exhaust_same_tier'" class="mt-3 text-sm text-amber-700">{{ t('admin.scheduling.exhaustWarning') }}</p>
-        </section>
-        <div class="sticky bottom-3 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white/95 p-4 shadow-lg dark:border-dark-600 dark:bg-dark-800/95">
-          <span class="text-sm" :class="conflict || !scopeMatches ? 'text-amber-600' : 'text-gray-500'">{{ conflict ? t('admin.scheduling.policyConflict') : !scopeMatches ? t('admin.scheduling.scopeChanged') : t('admin.scheduling.saveHint') }}</span>
-          <button type="submit" class="btn btn-primary" :disabled="saving || loading || conflict || !scopeMatches" data-testid="save-policy">{{ saving ? t('common.loading') : t('common.save') }}</button>
-        </div>
+            <div class="mt-4 overflow-x-auto">
+              <table class="scheduling-account-table w-full text-left text-sm">
+                <thead><tr class="border-b border-gray-200 dark:border-dark-600">
+                  <th class="p-2"><input type="checkbox" :checked="allVisibleSelected" :aria-label="t('admin.scheduling.groupPolicy.selectVisible')" data-testid="select-visible" @change="selectVisible"></th>
+                  <th class="p-2">{{ t('admin.scheduling.account') }}</th><th class="p-2">{{ t('admin.scheduling.priority') }}</th><th class="p-2">{{ t('admin.scheduling.weight') }}</th><th class="p-2">{{ t('admin.scheduling.groupPolicy.status') }}</th>
+                </tr></thead>
+                <tbody><tr v-for="account in visibleAccounts" :key="account.account_id" class="border-b border-gray-100 last:border-0 dark:border-dark-700" :data-testid="'account-row-' + account.account_id">
+                  <td class="p-2"><input v-model="selectedAccounts" type="checkbox" :value="account.account_id" :aria-label="t('admin.scheduling.groupPolicy.selectNamed', { name: accountName(account.account_id) })"></td>
+                  <td class="min-w-36 p-2"><div class="font-medium">{{ accountName(account.account_id) }}</div><div class="mt-1 text-xs text-gray-500">#{{ account.account_id }}<span v-if="accountDetails[account.account_id]?.platform"> · {{ accountDetails[account.account_id].platform }}</span></div></td>
+                  <td class="p-2" :data-label="t('admin.scheduling.priority')"><input v-model.number="account.priority" type="number" step="1" min="-2147483648" max="2147483647" required class="input w-28" :aria-label="accountName(account.account_id) + ' ' + t('admin.scheduling.priority')" :data-testid="'priority-' + account.account_id"></td>
+                  <td class="p-2" :data-label="t('admin.scheduling.weight')"><input v-model.number="account.traffic_weight" type="number" step="1" min="0" max="1000000" required class="input w-28" :aria-label="accountName(account.account_id) + ' ' + t('admin.scheduling.weight')" :data-testid="'weight-' + account.account_id"></td>
+                  <td class="min-w-36 p-2 text-gray-600 dark:text-dark-300">{{ accountStatus(account.account_id, account.traffic_weight) }}</td>
+                </tr></tbody>
+              </table>
+              <div v-if="!visibleAccounts.length" class="space-y-3 py-6 text-center text-sm text-gray-600 dark:text-dark-300" data-testid="empty-accounts"><p>{{ t('admin.scheduling.groupPolicy.' + (accountSearch ? 'emptyAccounts' : 'emptyGroup')) }}</p><button v-if="accountSearch" type="button" class="btn btn-secondary" @click="accountSearch = ''">{{ t('admin.scheduling.groupPolicy.clearSearch') }}</button><RouterLink v-else to="/admin/accounts" class="btn btn-secondary">{{ t('admin.scheduling.manageAccounts') }}</RouterLink></div>
+            </div>
+            <div v-if="pageCount > 1" class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm"><span>{{ t('admin.scheduling.groupPolicy.pageSummary', { page: pageNumber, pages: pageCount, count: filteredAccounts.length }) }}</span><div class="flex gap-2"><button type="button" class="btn btn-secondary" :disabled="pageNumber <= 1" @click="pageNumber--">{{ t('admin.scheduling.groupPolicy.previous') }}</button><button type="button" class="btn btn-secondary" :disabled="pageNumber >= pageCount" @click="pageNumber++">{{ t('admin.scheduling.groupPolicy.next') }}</button></div></div>
+            <p class="mt-3 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.groupPolicy.weightHint') }}</p>
+          </section>
+          <section class="scheduling-card">
+            <h2 class="font-semibold">{{ t('admin.scheduling.groupPolicy.waitTitle') }}</h2>
+            <div class="mt-4 grid gap-4 sm:grid-cols-2">
+              <label class="scheduling-label">{{ t('admin.scheduling.groupPolicy.firstOutputWait') }}<div class="mt-1 flex items-center gap-2"><input :value="policy.first_output_timeout_ms / 1000" class="input" type="number" min="1" max="3600" step="1" required data-testid="first-output-wait" @input="changeFirstWait"><span>{{ t('admin.scheduling.groupPolicy.seconds') }}</span></div></label>
+              <label class="scheduling-label">{{ t('admin.scheduling.groupPolicy.maxAttempts') }}<div class="mt-1 flex items-center gap-2"><input v-model.number="policy.max_attempts" class="input" type="number" min="1" max="10" step="1" required data-testid="max-attempts"><span>{{ t('admin.scheduling.groupPolicy.accountsUnit') }}</span></div></label>
+            </div>
+            <p class="mt-3 text-sm text-gray-500 dark:text-dark-400">{{ t('admin.scheduling.groupPolicy.waitHint') }}</p>
+            <details class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-700"><summary class="cursor-pointer text-sm font-medium">{{ t('admin.scheduling.groupPolicy.advancedWait') }}</summary>
+              <label class="mt-3 flex items-center gap-2 text-sm"><input v-model="automaticTotal" type="checkbox" data-testid="automatic-total" @change="updateAutomaticTotal">{{ t('admin.scheduling.groupPolicy.automaticTotal') }}</label>
+              <label class="scheduling-label mt-3 block max-w-sm">{{ t('admin.scheduling.groupPolicy.totalWait') }}<div class="mt-1 flex items-center gap-2"><input :value="policy.total_wait_timeout_ms / 1000" :disabled="automaticTotal" class="input" type="number" :min="policy.first_output_timeout_ms / 1000" max="7200" step="1" required data-testid="total-wait" @input="policy.total_wait_timeout_ms = secondsToMilliseconds($event)"><span>{{ t('admin.scheduling.groupPolicy.seconds') }}</span></div></label>
+            </details>
+          </section>
+          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 py-4 dark:border-dark-700">
+            <p class="text-sm text-gray-500 dark:text-dark-400" data-testid="draft-status">{{ t('admin.scheduling.groupPolicy.' + (dirty ? 'unsaved' : 'upToDate')) }}</p>
+            <button type="submit" class="btn btn-primary" :disabled="saving || conflicted || !dirty" data-testid="save-policy">{{ saving ? t('common.loading') : t('common.save') }}</button>
+          </div>
         </fieldset>
       </form>
-
-      <section v-if="policy" class="scheduling-card">
-        <h2 class="font-semibold">{{ t('admin.scheduling.explainTitle') }}</h2><p class="mt-2 text-sm text-gray-500">{{ t('admin.scheduling.explainHint') }}</p>
-        <div class="mt-4 grid gap-3 sm:grid-cols-3"><label class="scheduling-label">{{ t('admin.scheduling.protocol') }}<select v-model="explainProtocol" class="input mt-1" data-testid="explain-protocol"><option v-for="protocol in protocols" :key="protocol" :value="protocol">{{ protocolLabel(protocol) }}</option></select></label><label class="scheduling-label">{{ t('admin.scheduling.reasoning') }}<input v-model.trim="explainReasoning" class="input mt-1"></label><label class="scheduling-label">{{ t('admin.scheduling.contextTokens') }}<input v-model.number="explainContext" type="number" min="0" step="1" class="input mt-1" :placeholder="t('admin.scheduling.unknownContext')"></label></div>
-        <button type="button" class="btn btn-secondary mt-4" :disabled="explaining || saving || !scopeMatches" data-testid="explain" @click="runExplain">{{ explaining ? t('common.loading') : t('admin.scheduling.runExplain') }}</button>
-        <div v-if="explanation" class="mt-4" aria-live="polite"><p class="text-sm font-medium">{{ t('admin.scheduling.explainResult', { version: explanation.policy_version }) }} · {{ explanation.reason }}</p><p class="mt-1 text-sm">{{ t('admin.scheduling.selectedAccount') }}: {{ explanation.selected_account_id ? accountName(explanation.selected_account_id) : '—' }}</p>
-          <div class="mt-3 overflow-x-auto"><table class="w-full text-left text-sm"><thead><tr><th class="p-2">{{ t('admin.scheduling.account') }}</th><th class="p-2">{{ t('admin.scheduling.priority') }}</th><th class="p-2">{{ t('admin.scheduling.weight') }}</th><th class="p-2">{{ t('admin.scheduling.targetShare') }}</th><th class="p-2">{{ t('admin.scheduling.health') }}</th><th class="p-2">{{ t('admin.scheduling.recoveryProgress') }}</th><th class="p-2">{{ t('admin.scheduling.decision') }}</th></tr></thead><tbody><tr v-for="candidate in explanation.candidates" :key="candidate.account_id" class="border-t border-gray-100 dark:border-dark-700"><td class="p-2">{{ candidate.account_name || accountName(candidate.account_id) }}</td><td class="p-2">{{ candidate.priority }}</td><td class="p-2">{{ candidate.traffic_weight }}</td><td class="p-2">{{ candidate.target_share == null ? '—' : (candidate.target_share * 100).toFixed(1) + '%' }}</td><td class="p-2">{{ candidate.health || '—' }} / {{ candidate.control_state || '—' }}<div v-if="candidate.current_concurrency != null" class="text-xs text-gray-500">{{ candidate.current_concurrency }} / {{ candidate.concurrency_limit ?? '—' }}</div></td><td class="p-2"><span>{{ recoveryStage(candidate) }}</span><div v-if="candidate.health?.toLowerCase() === 'recovering'" class="text-xs text-gray-500">{{ t('admin.scheduling.recoveryGood') }} {{ candidate.good_streak ?? t('admin.scheduling.unobserved') }}<br>{{ t('admin.scheduling.effectiveShare') }}: {{ candidate.effective_share == null ? t('admin.scheduling.unobserved') : (candidate.effective_share * 100).toFixed(2) + '%' }}</div></td><td class="p-2" :class="candidate.eligible ? 'text-emerald-600' : 'text-amber-600'">{{ candidate.reason }}</td></tr></tbody></table></div>
-          <p class="mt-2 text-xs text-gray-500">{{ t('admin.scheduling.noActualMetrics') }}</p>
-        </div>
-      </section>
-      <SchedulingTrafficStats v-if="policy" :group-id="policy.group_id" :model="policy.model" :candidates="explanation?.candidates" />
-      <SchedulingRequestAttempts :initial-request-id="typeof route.query.request_id === 'string' ? route.query.request_id : ''" />
-      <AccountSchedulingControlDialog :show="controlAccount !== null" :account="controlAccount" @close="controlAccount = null" @updated="onControlUpdated" @observed="onControlUpdated" />
+      <BaseDialog :show="pendingGroup !== null || pendingReload || pendingNavigation !== null" :title="t('admin.scheduling.groupPolicy.unsaved')" width="narrow" @close="keepDraft">
+        <section role="alertdialog" :aria-label="t('admin.scheduling.groupPolicy.unsaved')"><p class="mt-3 text-sm text-gray-600 dark:text-dark-300">{{ t('admin.scheduling.groupPolicy.discardHint') }}</p>
+          <div class="mt-5 flex justify-end gap-3"><button class="btn btn-secondary" data-testid="keep-draft" @click="keepDraft">{{ t('admin.scheduling.groupPolicy.keepEditing') }}</button><button class="btn btn-primary" data-testid="discard-draft" @click="discardDraft">{{ t('admin.scheduling.groupPolicy.discard') }}</button></div>
+        </section>
+      </BaseDialog>
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import AccountSchedulingControlDialog from '@/components/account/AccountSchedulingControlDialog.vue'
-import SchedulingRequestAttempts from '@/components/account/SchedulingRequestAttempts.vue'
-import SchedulingTrafficStats from '@/components/account/SchedulingTrafficStats.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
+import { useSchedulingFeedback } from '@/composables/useSchedulingFeedback'
 import schedulingAPI from '@/api/admin/scheduling'
 import accountsAPI from '@/api/admin/accounts'
 import groupsAPI from '@/api/admin/groups'
 import type { AccountListItem, AdminGroup } from '@/types'
-import type { AccountSchedulingControl, AccountSchedulingRule, ModelLatencyProfile, SchedulingExplainCandidate, SchedulingExplanation, SchedulingPolicy } from '@/types/scheduling'
-import { createLatencyProfile, createSchedulingPolicy, isSchedulingConflict, latencyKeys, validateSchedulingPolicy } from '@/utils/scheduling'
+import type { GroupSchedulingDocument, GroupSchedulingMigrationWarning, GroupSchedulingPolicy } from '@/types/scheduling'
+import { cloneGroupPolicy, groupPolicyFingerprint, isGroupSchedulingConflict, validateGroupPolicy } from '@/utils/groupScheduling'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
 const route = useRoute()
-const scopeGroup = ref(0)
-const scopeModel = ref(typeof route.query.model === 'string' ? route.query.model : '')
-const policy = ref<SchedulingPolicy | null>(null)
-const loadedVersion = ref(0)
-const inheritedPolicyVersion = ref<number | null>(null)
-const globalDefaults = ref<SchedulingPolicy | null>(null)
+const modeStore = useSchedulingModeStore()
+const pageRoot = ref<HTMLElement | null>(null)
+const noticeElement = ref<HTMLElement | null>(null)
+const confirmFeedback = useSchedulingFeedback(pageRoot)
+const displayOrder = ref<number[]>([])
 const groups = ref<AdminGroup[]>([])
-const accounts = ref<AccountListItem[]>([])
+const groupsLoading = ref(true)
+const scopeGroup = ref(-1)
+const defaultScope = ref<GroupSchedulingDocument['default_scope']>('ungrouped')
+const policy = ref<GroupSchedulingPolicy | null>(null)
+const loadedVersion = ref(0)
+const configured = ref(true)
+const baseline = ref('')
 const loading = ref(false)
 const saving = ref(false)
-const explaining = ref(false)
-const conflict = ref(false)
+const conflicted = ref(false)
 const error = ref('')
 const notice = ref('')
-const addAccountID = ref(0)
-const controlAccount = ref<{ id: number; name: string } | null>(null)
-const controls = ref<Record<number, AccountSchedulingControl>>({})
-const explanation = ref<SchedulingExplanation | null>(null)
-const explainProtocol = ref('responses')
-const explainReasoning = ref('')
-const explainContext = ref<number | ''>('')
-const modes = ['swrr', 'pin', 'fill_first'] as const
-const degradedModes = ['bounded_best_effort', 'strict_priority', 'fail_fast'] as const
-const protocols = ['responses', 'chat', 'messages', 'gemini', 'ws', 'http'] as const
-const retryNumberKeys = ['max_attempts', 'max_per_tier', 'max_per_account', 'max_after_timeout', 'initial_per_token', 'burst'] as const
-const accountsByID = computed(() => new Map(accounts.value.map(account => [account.id, account])))
-const scopedAccounts = computed(() => accounts.value.filter(account => !policy.value?.group_id || account.group_ids?.includes(policy.value.group_id)))
-const availableAccounts = computed(() => scopedAccounts.value.filter(account => !policy.value?.accounts.some(rule => rule.account_id === account.id)))
-const scopeMatches = computed(() => policy.value?.group_id === scopeGroup.value && policy.value?.model === scopeModel.value.trim())
-const fallbackProfiles = computed(() => inheritedPolicyVersion.value === null && policy.value?.group_id ? globalDefaults.value?.profiles ?? [] : [])
-const requests = new AbortController()
+const migrationWarnings = ref<GroupSchedulingMigrationWarning[]>([])
+const accountDetails = ref<Record<number, AccountListItem>>({})
+const selectedAccounts = ref<number[]>([])
+const accountSearch = ref('')
+const pageNumber = ref(1)
+const pageSize = 50
+const batchPriority = ref('')
+const batchWeight = ref('')
+const automaticTotal = ref(true)
+const pendingGroup = ref<number | null>(null)
+const pendingReload = ref(false)
+const pendingNavigation = ref<((allow: boolean) => void) | null>(null)
 let loadGeneration = 0
+let requests = new AbortController()
 let alive = true
-function protocolLabel(protocol: string) { return t('admin.scheduling.protocolOptions.' + protocol) }
-function normalizeProfileProtocols(value: SchedulingPolicy | null) { for (const profile of value?.profiles ?? []) { if (profile.transport === 'anthropic') profile.transport = 'messages' } }
-function recoveryStage(candidate: SchedulingExplainCandidate): string { if (candidate.health?.toLowerCase() !== 'recovering') return '—'; return candidate.recovery_stage === 0 ? '10%' : candidate.recovery_stage === 1 ? '30%' : t('admin.scheduling.unobserved') }
-function milliseconds(event: Event): number { return Math.round(Number((event.target as HTMLInputElement).value) * 1000) }
-function accountName(id: number): string { return accountsByID.value.get(id)?.name || '#' + id }
-function setPriority(rule: AccountSchedulingRule, event: Event) { const value = (event.target as HTMLInputElement).value; rule.priority = value === '' ? null : Number(value) }
-function addAccount() { if (!policy.value || !addAccountID.value) return; policy.value.accounts.push({ account_id: addAccountID.value, priority: null, traffic_weight: 1, fill_order: policy.value.accounts.length }); addAccountID.value = 0 }
-function addProfile() { if (!policy.value) return; const profile = createLatencyProfile(); profile.name = 'profile-' + (policy.value.profiles.length + 1); policy.value.profiles.push(profile) }
-function deriveRecovery(profile: ModelLatencyProfile) { profile.recovery_threshold_ms = Math.round(profile.health_threshold_ms * 0.75); profile.min_attempt_window_ms = profile.health_threshold_ms }
-function openControl(id: number) { controlAccount.value = { id, name: accountName(id) } }
-function onControlUpdated(control: AccountSchedulingControl) { controls.value[control.account_id] = control }
-async function loadPolicy() {
-  if (!scopeModel.value.trim() || saving.value) return
+let initializingGroups = false
+const dirty = computed(() => policy.value !== null && groupPolicyFingerprint(policy.value) !== baseline.value)
+watch(dirty, changed => { if (changed) notice.value = '' })
+const filteredAccounts = computed(() => {
+  const query = accountSearch.value.toLowerCase()
+  return (policy.value?.accounts ?? []).filter(account => !query || (accountName(account.account_id) + ' ' + account.account_id).toLowerCase().includes(query)).slice().sort((a, b) => displayOrder.value.indexOf(a.account_id) - displayOrder.value.indexOf(b.account_id))
+})
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredAccounts.value.length / pageSize)))
+const visibleAccounts = computed(() => filteredAccounts.value.slice((pageNumber.value - 1) * pageSize, pageNumber.value * pageSize))
+watch(accountSearch, () => { pageNumber.value = 1 })
+const allVisibleSelected = computed(() => visibleAccounts.value.length > 0 && visibleAccounts.value.every(account => selectedAccounts.value.includes(account.account_id)))
+function accountName(id: number) { return accountDetails.value[id]?.name || t('admin.scheduling.groupPolicy.accountNumber', { id }) }
+function accountStatus(id: number, weight: number) {
+  if (weight === 0) return t('admin.scheduling.zeroWeight')
+  const account = accountDetails.value[id]
+  if (!account) return t('admin.scheduling.groupPolicy.statusUnknown')
+  if (account.schedulable === false) return t('admin.scheduling.groupPolicy.disabled')
+  if (account.status !== 'active') return t('admin.scheduling.groupPolicy.unavailable')
+  return t('admin.scheduling.groupPolicy.available')
+}
+function secondsToMilliseconds(event: Event) { return Number((event.target as HTMLInputElement).value) * 1000 }
+function changeFirstWait(event: Event) {
+  if (!policy.value) return
+  policy.value.first_output_timeout_ms = secondsToMilliseconds(event)
+  updateAutomaticTotal()
+}
+function updateAutomaticTotal() { if (policy.value && automaticTotal.value) policy.value.total_wait_timeout_ms = policy.value.first_output_timeout_ms * 2 }
+function selectVisible(event: Event) {
+  const ids = visibleAccounts.value.map(account => account.account_id)
+  selectedAccounts.value = (event.target as HTMLInputElement).checked ? [...new Set([...selectedAccounts.value, ...ids])] : selectedAccounts.value.filter(id => !ids.includes(id))
+}
+function applyBatch() {
+  if (!policy.value || !selectedAccounts.value.length || (batchPriority.value === '' && batchWeight.value === '')) return
+  const next = cloneGroupPolicy(policy.value)
+  for (const account of next.accounts) if (selectedAccounts.value.includes(account.account_id)) {
+    if (batchPriority.value !== '') account.priority = Number(batchPriority.value)
+    if (batchWeight.value !== '') account.traffic_weight = Number(batchWeight.value)
+  }
+  const validation = validateGroupPolicy(next)
+  if (validation) { error.value = t('admin.scheduling.groupPolicy.' + validation); return }
+  policy.value = next
+  error.value = ''; notice.value = ''; batchPriority.value = ''; batchWeight.value = ''
+}
+function changeGroup(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const id = Number(select.value)
+  select.value = String(scopeGroup.value)
+  if (id === scopeGroup.value || !Number.isSafeInteger(id) || id < 0) return
+  if (dirty.value) { pendingGroup.value = id; return }
+  void loadGroup(id)
+}
+function requestReload() {
+  if (scopeGroup.value < 0) { void initializeGroups(); return }
+  if (dirty.value) { pendingReload.value = true; return }
+  void loadGroup(scopeGroup.value)
+}
+function keepDraft() {
+  pendingGroup.value = null; pendingReload.value = false
+  const resolve = pendingNavigation.value; pendingNavigation.value = null; resolve?.(false)
+}
+function discardDraft() {
+  const id = pendingGroup.value ?? scopeGroup.value
+  const shouldReload = pendingGroup.value !== null || pendingReload.value
+  pendingGroup.value = null; pendingReload.value = false
+  const resolve = pendingNavigation.value; pendingNavigation.value = null
+  if (resolve) resolve(true)
+  else if (shouldReload) void loadGroup(id)
+}
+function acceptDocument(document: GroupSchedulingDocument, groupID: number) {
+  if (!document.policy || document.policy.group_id !== groupID || !Array.isArray(document.policy.accounts)) throw new Error(t('admin.scheduling.groupPolicy.invalidScope'))
+  policy.value = cloneGroupPolicy(document.policy)
+  loadedVersion.value = document.version
+  configured.value = document.configured !== false
+  baseline.value = groupPolicyFingerprint(policy.value)
+  displayOrder.value = [...policy.value.accounts].sort((a, b) => a.priority - b.priority || a.account_id - b.account_id).map(account => account.account_id)
+  automaticTotal.value = policy.value.total_wait_timeout_ms === policy.value.first_output_timeout_ms * 2
+  migrationWarnings.value = document.migration_warnings ?? []
+  if (groupID === 0 && document.default_scope) defaultScope.value = document.default_scope
+}
+async function loadAccountDetails(groupID: number, document: GroupSchedulingDocument, signal: AbortSignal): Promise<Record<number, AccountListItem>> {
+  const allowed = new Set(document.policy.accounts.map(account => account.account_id))
+  const result: Record<number, AccountListItem> = {}
+  let seen = 0
+  for (let page = 1; allowed.size > Object.keys(result).length; page++) {
+    const group = groupID > 0 ? String(groupID) : document.default_scope === 'all_accounts' ? undefined : 'ungrouped'
+    const response = await accountsAPI.list(page, 100, { group, lite: 'true' }, { signal })
+    for (const account of response.items) if (allowed.has(account.id)) result[account.id] = account
+    seen += response.items.length
+    if (!response.items.length || seen >= response.total || signal.aborted) break
+  }
+  return result
+}
+async function loadGroup(groupID: number) {
   const generation = ++loadGeneration
-  loading.value = true; error.value = ''; notice.value = ''; explanation.value = null
-  const groupID = scopeGroup.value; const model = scopeModel.value.trim()
+  requests.abort(); requests = new AbortController()
+  scopeGroup.value = groupID; loading.value = true; policy.value = null; accountDetails.value = {}
+  baseline.value = ''; selectedAccounts.value = []; accountSearch.value = ''; pageNumber.value = 1; conflicted.value = false; error.value = ''; notice.value = ''; migrationWarnings.value = []
   try {
-    const [document, defaults] = await Promise.all([
-      schedulingAPI.getPolicy(groupID, model, requests.signal),
-      groupID ? schedulingAPI.getPolicy(0, model, requests.signal) : Promise.resolve(null)
-    ])
+    const document = await schedulingAPI.getGroupPolicy(groupID, requests.signal)
     if (!alive || generation !== loadGeneration) return
-    globalDefaults.value = defaults?.policy ? structuredClone(defaults.policy) : null
-    inheritedPolicyVersion.value = !document.policy && defaults?.policy ? defaults.version : null
-    const effective = document.policy ?? defaults?.policy
-    policy.value = effective ? { ...structuredClone(effective), group_id: groupID, model, version: document.version } : createSchedulingPolicy(groupID, model)
-    policy.value.accounts ??= []; policy.value.profiles ??= []
-    normalizeProfileProtocols(policy.value); normalizeProfileProtocols(globalDefaults.value)
-    loadedVersion.value = document.version; conflict.value = false
-  } catch (err) { if (alive && generation === loadGeneration) error.value = extractApiErrorMessage(err, t('admin.scheduling.loadFailed')) }
-  finally { if (alive && generation === loadGeneration) loading.value = false }
+    acceptDocument(document, groupID)
+    try {
+      const details = await loadAccountDetails(groupID, document, requests.signal)
+      if (alive && generation === loadGeneration) accountDetails.value = details
+    } catch (cause) {
+      if (alive && generation === loadGeneration && !requests.signal.aborted) notice.value = t('admin.scheduling.groupPolicy.namesUnavailable')
+    }
+  } catch (cause) {
+    if (alive && generation === loadGeneration && !requests.signal.aborted) error.value = extractApiErrorMessage(cause, t('admin.scheduling.loadFailed'))
+  } finally { if (alive && generation === loadGeneration) loading.value = false }
 }
 async function save() {
-  if (!policy.value || !scopeMatches.value || saving.value || conflict.value) return
-  error.value = ''; notice.value = ''
-  const validation = validateSchedulingPolicy(policy.value)
-  if (validation) { error.value = t('admin.scheduling.errors.' + validation); return }
-  saving.value = true
-  try {
-    const document = await schedulingAPI.savePolicy(JSON.parse(JSON.stringify(policy.value)), loadedVersion.value)
-    if (!alive) return
-    policy.value = document.policy; loadedVersion.value = document.version; explanation.value = null; inheritedPolicyVersion.value = null
-    notice.value = t('admin.scheduling.saved', { version: document.version })
-  } catch (err) {
-    if (!alive) return
-    conflict.value = isSchedulingConflict(err)
-    error.value = conflict.value ? t('admin.scheduling.policyConflict') : extractApiErrorMessage(err, t('admin.scheduling.saveFailed'))
-  } finally { saving.value = false }
-}
-async function runExplain() {
-  if (!policy.value || !scopeMatches.value || explaining.value) return
-  if (explainContext.value !== '' && (!Number.isSafeInteger(explainContext.value) || explainContext.value < 0)) { error.value = t('admin.scheduling.errors.invalidContext'); return }
-  explaining.value = true; error.value = ''; explanation.value = null
+  if (!modeStore.isControlled || !policy.value || saving.value || conflicted.value || !dirty.value || policy.value.group_id !== scopeGroup.value) return
+  const validation = validateGroupPolicy(policy.value)
+  if (validation) { error.value = t('admin.scheduling.groupPolicy.' + validation); return }
+  const groupID = scopeGroup.value
   const generation = loadGeneration
+  saving.value = true; error.value = ''; notice.value = ''
   try {
-    const result = await schedulingAPI.explain({ group_id: policy.value.group_id, model: policy.value.model, protocol: explainProtocol.value,
-      reasoning_effort: explainReasoning.value, ...(explainContext.value === '' ? {} : { context_tokens: explainContext.value }) }, requests.signal)
-    if (alive && generation === loadGeneration) explanation.value = result
-  } catch (err) { if (alive) error.value = extractApiErrorMessage(err, t('admin.scheduling.explainFailed')) }
-  finally { explaining.value = false }
+    const document = await schedulingAPI.saveGroupPolicy(cloneGroupPolicy(policy.value), loadedVersion.value)
+    if (!alive || generation !== loadGeneration) return
+    acceptDocument(document, groupID)
+    notice.value = t('admin.scheduling.saved', { version: loadedVersion.value })
+    await nextTick(); confirmFeedback(noticeElement.value)
+  } catch (cause) {
+    if (!alive || generation !== loadGeneration) return
+    conflicted.value = isGroupSchedulingConflict(cause)
+    error.value = conflicted.value ? t('admin.scheduling.policyConflict') : extractApiErrorMessage(cause, t('admin.scheduling.saveFailed'))
+  } finally { if (alive) saving.value = false }
 }
-onMounted(async () => {
-  const groupPromise = groupsAPI.getAllIncludingInactive().then(result => { if (alive) groups.value = result })
-  const accountPromise = (async () => {
-    const collected: AccountListItem[] = []
-    for (let page = 1; alive; page++) {
-      const result = await accountsAPI.list(page, 100, { lite: 'true' }, { signal: requests.signal })
-      collected.push(...result.items)
-      if (!result.items.length || collected.length >= result.total) break
-    }
-    if (alive) accounts.value = collected
-  })()
-  const results = await Promise.allSettled([groupPromise, accountPromise])
-  if (!alive) return
-  const failed = results.find(result => result.status === 'rejected')
-  if (failed?.status === 'rejected') error.value = extractApiErrorMessage(failed.reason, t('admin.scheduling.loadFailed'))
-  const accountID = Number(route.query.account)
-  if (Number.isSafeInteger(accountID) && accountID > 0) openControl(accountID)
-  if (scopeModel.value) await loadPolicy()
+function saveShortcut(event: KeyboardEvent) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && modeStore.isControlled) { event.preventDefault(); void save() } }
+function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
+onBeforeRouteLeave(() => {
+  if (saving.value) return false
+  if (!dirty.value) return true
+  return new Promise<boolean>(resolve => { pendingNavigation.value = resolve })
 })
-onUnmounted(() => { alive = false; loadGeneration++; requests.abort() })
+async function initializeGroups() {
+  if (initializingGroups || groups.value.length || policy.value) return
+  initializingGroups = true
+  groupsLoading.value = true
+  error.value = ''
+  try {
+    groups.value = await groupsAPI.getAllIncludingInactive()
+    if (!alive) return
+    const query = route.query.group_id ?? route.query.group
+    const requested = query === undefined ? -1 : Number(query)
+    const initial = requested === 0 || groups.value.some(group => group.id === requested) ? requested : groups.value[0]?.id ?? 0
+    await loadGroup(initial)
+  } catch (cause) { if (alive) error.value = extractApiErrorMessage(cause, t('admin.scheduling.loadFailed')) }
+  finally { initializingGroups = false; if (alive) groupsLoading.value = false }
+}
+watch(() => modeStore.isControlled, value => { if (value) void initializeGroups(); else { requests.abort() } })
+onMounted(async () => {
+  window.addEventListener('beforeunload', beforeUnload)
+  window.addEventListener('keydown', saveShortcut)
+  await modeStore.fetch()
+  if (modeStore.isControlled) void initializeGroups()
+})
+onUnmounted(() => { alive = false; loadGeneration++; requests.abort(); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('keydown', saveShortcut); pendingNavigation.value?.(false) })
 </script>
 
 <style scoped>
 .scheduling-card { @apply rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800 sm:p-5; }
 .scheduling-label { @apply text-sm font-medium text-gray-700 dark:text-dark-200; }
+@media (max-width: 639px) {
+  .scheduling-account-table, .scheduling-account-table tbody { display: block; }
+  .scheduling-account-table thead { display: none; }
+  .scheduling-account-table tbody tr { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 8px 0; }
+  .scheduling-account-table td { min-width: 0; }
+  .scheduling-account-table td:first-child { position: absolute; top: 8px; right: 0; }
+  .scheduling-account-table td:nth-child(2) { grid-column: 1 / -1; padding-right: 36px; }
+  .scheduling-account-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 6px; font-size: 12px; }
+  .scheduling-account-table td input[type=number] { width: 100%; font-size: 16px; }
+  .scheduling-account-table td:nth-child(5) { font-size: 12px; }
+}
 </style>

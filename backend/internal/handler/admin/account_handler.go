@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -2471,10 +2472,6 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
-	legacySchedulable := req.Schedulable
-	if h.schedulingController != nil {
-		legacySchedulable = nil
-	}
 	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
 		AccountIDs:            req.AccountIDs,
 		Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
@@ -2485,7 +2482,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		RateMultiplier:        req.RateMultiplier,
 		LoadFactor:            req.LoadFactor,
 		Status:                req.Status,
-		Schedulable:           legacySchedulable,
+		Schedulable:           req.Schedulable,
 		GroupIDs:              req.GroupIDs,
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
@@ -2512,36 +2509,6 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
-	if h.schedulingController != nil && req.Schedulable != nil {
-		action := "pause"
-		if *req.Schedulable {
-			action = "resume"
-		}
-		successful := make([]int64, 0, len(result.SuccessIDs))
-		for _, id := range result.SuccessIDs {
-			_, controlErr := h.schedulingController.Control(c.Request.Context(), scheduling.ControlCommand{AccountID: id, Scope: scheduling.ScopeAccount, Action: action})
-			if controlErr == nil {
-				successful = append(successful, id)
-				continue
-			}
-			result.Success--
-			result.Failed++
-			result.FailedIDs = append(result.FailedIDs, id)
-			found := false
-			for i := range result.Results {
-				if result.Results[i].AccountID == id {
-					result.Results[i].Success = false
-					result.Results[i].Error = "Other fields updated; scheduling control was not confirmed"
-					found = true
-					break
-				}
-			}
-			if !found {
-				result.Results = append(result.Results, service.BulkUpdateAccountResult{AccountID: id, Success: false, Error: "Scheduling control was not confirmed"})
-			}
-		}
-		result.SuccessIDs = successful
-	}
 	response.Success(c, result)
 }
 
@@ -2926,39 +2893,31 @@ func (h *AccountHandler) GetBatchUsage(c *gin.Context) {
 
 // SetSchedulableRequest represents the request body for setting schedulable status
 type SetSchedulableRequest struct {
-	Schedulable bool `json:"schedulable"`
+	Schedulable *bool `json:"schedulable"`
 }
 
 // SetSchedulable handles toggling account schedulable status
 // POST /api/v1/admin/accounts/:id/schedulable
 func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
 
 	var req SetSchedulableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || req.Schedulable == nil {
+		response.BadRequest(c, "schedulable must be explicitly true or false")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Only one scheduling switch object is allowed")
 		return
 	}
 
-	var account *service.Account
-	if h.schedulingController != nil {
-		action := "pause"
-		if req.Schedulable {
-			action = "resume"
-		}
-		_, err = h.schedulingController.Control(c.Request.Context(), scheduling.ControlCommand{AccountID: accountID, Scope: scheduling.ScopeAccount, Action: action})
-		if err != nil {
-			schedulingError(c, err)
-			return
-		}
-		account, err = h.adminService.GetAccount(c.Request.Context(), accountID)
-	} else {
-		account, err = h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, req.Schedulable)
-	}
+	account, err := h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, *req.Schedulable)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

@@ -72,7 +72,7 @@ func buildSeedanceURL(base string, endpoint GrokMediaEndpoint, taskID string) (s
 
 // ForwardSeedance preserves the Ark protocol, including multimodal content and
 // future fields. Only model is rewritten using the account's configured mapping.
-func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (_ *OpenAIForwardResult, retErr error) {
 	if !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance) || !endpoint.IsSeedance() {
 		return nil, fmt.Errorf("seedance requires an OpenAI API key account with a custom base URL")
 	}
@@ -125,6 +125,7 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	responseBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
@@ -140,6 +141,9 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 		id := strings.TrimSpace(gjson.GetBytes(responseBody, "id").String())
 		if id == "" {
 			return nil, fmt.Errorf("seedance create response missing task ID")
+		}
+		if err := validateControlledNonstreamResponse(resp, responseBody, "seedance"); err != nil {
+			return nil, err
 		}
 		result.ResponseID = SeedanceTaskKey(id)
 	}

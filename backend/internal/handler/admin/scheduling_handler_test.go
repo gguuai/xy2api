@@ -109,7 +109,7 @@ func TestSchedulingHandlerReadsNoWrites(t *testing.T) {
 	require.Equal(t, 2, s.reads)
 	require.Zero(t, s.writes)
 }
-func TestSchedulingLegacyAndBulkControlsUseGate(t *testing.T) {
+func TestSchedulingLegacyAndBulkControlsUseAccountSwitch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s := &schedulingAdminStub{}
 	svc := &stubAdminService{}
@@ -120,13 +120,12 @@ func TestSchedulingLegacyAndBulkControlsUseGate(t *testing.T) {
 	r.POST("/bulk", h.BulkUpdate)
 	w := schedulingTestCall(r, "POST", "/accounts/7/schedulable", `{"schedulable":false}`)
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, "pause", s.commands[0].Action)
+	require.Zero(t, s.writes)
 	w = schedulingTestCall(r, "POST", "/bulk", `{"account_ids":[1,2],"schedulable":true}`)
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Nil(t, svc.lastBulkUpdateAccountInput.Schedulable)
-	require.Equal(t, 3, s.writes)
-	require.Equal(t, "resume", s.commands[1].Action)
-	require.Equal(t, "resume", s.commands[2].Action)
+	require.NotNil(t, svc.lastBulkUpdateAccountInput.Schedulable)
+	require.True(t, *svc.lastBulkUpdateAccountInput.Schedulable)
+	require.Zero(t, s.writes)
 }
 
 func TestSchedulingHandlerRequestAttemptsIsReadOnly(t *testing.T) {
@@ -159,4 +158,46 @@ func TestSchedulingHandlerStatisticsIsReadOnly(t *testing.T) {
 	require.Zero(t, s.writes)
 	require.Equal(t, http.StatusBadRequest, schedulingTestCall(r, "GET", "/stats?model=m&since=invalid", "").Code)
 	require.Equal(t, 1, s.reads)
+}
+
+type schedulingPolicyMutationStub struct {
+	schedulingAdminStub
+	expected   int64
+	resetNames []string
+	groupID    int64
+}
+
+func (s *schedulingPolicyMutationStub) RestorePolicyInheritance(_ context.Context, groupID int64, model string, expected int64) (scheduling.PolicyRecord, error) {
+	s.writes++
+	s.expected = expected
+	s.groupID = groupID
+	return scheduling.PolicyRecord{GroupID: groupID, Model: model, Version: expected + 1}, s.err
+}
+func (s *schedulingPolicyMutationStub) PutPolicyWithHealthReset(_ context.Context, p scheduling.Policy, expected int64, names []string) (scheduling.PolicyRecord, error) {
+	s.writes++
+	s.expected = expected
+	s.resetNames = names
+	return scheduling.PolicyRecord{GroupID: p.GroupID, Model: p.Model, Version: expected + 1, Policy: &p}, s.err
+}
+func TestSchedulingHandlerRestoreAndHealthResetCAS(t *testing.T) {
+	s := &schedulingPolicyMutationStub{}
+	h := NewSchedulingHandler(s, nil)
+	router := gin.New()
+	router.DELETE("/policies", h.RestoreInheritance)
+	router.PUT("/policies", h.PutPolicy)
+	for _, body := range []string{`{"group_id":0,"model":"m","expected_version":7}`, `{"group_id":2,"model":"m"}`, `{"group_id":2,"model":"m","expected_version":0}`} {
+		require.Equal(t, http.StatusBadRequest, schedulingTestCall(router, "DELETE", "/policies", body).Code)
+	}
+	require.Zero(t, s.writes)
+	result := schedulingTestCall(router, "DELETE", "/policies", `{"group_id":2,"model":"m","expected_version":7}`)
+	require.Equal(t, http.StatusOK, result.Code)
+	require.EqualValues(t, 7, s.expected)
+	require.Contains(t, result.Body.String(), `"policy":null`)
+	s.err = scheduling.ErrVersionConflict
+	require.Equal(t, http.StatusConflict, schedulingTestCall(router, "DELETE", "/policies", `{"group_id":2,"model":"m","expected_version":7}`).Code)
+	s.err = nil
+	result = schedulingTestCall(router, "PUT", "/policies", `{"group_id":2,"model":"m","expected_version":8,"policy":{"profiles":[{"name":"base"}]},"reset_health_profiles":["base"]}`)
+	require.Equal(t, http.StatusOK, result.Code)
+	require.Equal(t, []string{"base"}, s.resetNames)
+	require.EqualValues(t, 8, s.expected)
 }

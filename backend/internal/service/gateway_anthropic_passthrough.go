@@ -849,7 +849,8 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
-) (*ClaudeUsage, error) {
+) (_ *ClaudeUsage, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
@@ -858,6 +859,10 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateControlledNonstreamResponse(resp, body, "messages"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

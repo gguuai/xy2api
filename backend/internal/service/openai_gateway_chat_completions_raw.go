@@ -504,7 +504,8 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	requestID := resp.Header.Get("x-request-id")
 
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
@@ -514,6 +515,10 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
+	if err := validateControlledNonstreamResponse(resp, respBody, "chat"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

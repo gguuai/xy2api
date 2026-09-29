@@ -453,7 +453,7 @@ func (r *accountRepository) ListCRSAccountIDs(ctx context.Context) (map[string]i
 }
 
 func (r *accountRepository) Update(ctx context.Context, account *service.Account) error {
-	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier)
+	return r.updateAccount(ctx, account, nil, nil, account.RateMultiplier, false)
 }
 
 // UpdateWithAccountBillingSettings applies an admin account edit while
@@ -466,7 +466,7 @@ func (r *accountRepository) UpdateWithAccountBillingSettings(
 	rateSyncEnabled *bool,
 	rateMultiplier *float64,
 ) error {
-	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier)
+	return r.updateAccount(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier, true)
 }
 
 func (r *accountRepository) updateAccount(
@@ -475,6 +475,7 @@ func (r *accountRepository) updateAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	preserveSchedulable bool,
 ) error {
 	if account == nil {
 		return nil
@@ -506,6 +507,7 @@ func (r *accountRepository) updateAccount(
 		explicitProbeEnabled,
 		explicitRateSyncEnabled,
 		explicitRateMultiplier,
+		preserveSchedulable,
 	)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
@@ -535,6 +537,7 @@ func (r *accountRepository) updateLockedAccount(
 	explicitProbeEnabled *bool,
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
+	preserveSchedulable bool,
 ) (*dbent.Account, error) {
 	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitRateSyncEnabled)
 	if err != nil {
@@ -558,13 +561,19 @@ func (r *accountRepository) updateLockedAccount(
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
-		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
 
 	current, err := client.Account.Query().Where(dbaccount.IDEQ(account.ID)).ForUpdate().Only(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Ordinary editing has no scheduling switch; keep the locked current
+	// value instead of undoing a concurrent one-click toggle.
+	if preserveSchedulable && account.Status != service.StatusError {
+		schedulable = current.Schedulable
+	}
+	builder.SetSchedulable(schedulable)
+	account.Schedulable = schedulable
 	state := current.IqCheck
 	identityChanged := current.Type != account.Type || current.Platform != account.Platform
 	for _, key := range iqIdentityKeys {
@@ -2752,9 +2761,9 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue schedulable change failed: account=%d err=%v", id, err)
 	}
-	if !schedulable {
-		r.syncSchedulerAccountSnapshot(ctx, id)
-	}
+	// The administrator's single switch must propagate both ways immediately.
+	// Bound the refresh independently of a disconnected administrator request.
+	r.syncSchedulerSwitchDetached(ctx, []int64{id})
 	return nil
 }
 
@@ -3418,11 +3427,15 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		if updates.Status != nil && (*updates.Status == service.StatusError || *updates.Status == service.StatusDisabled) {
 			shouldSync = true
 		}
-		if updates.Schedulable != nil && !*updates.Schedulable {
+		if updates.Schedulable != nil {
 			shouldSync = true
 		}
 		if shouldSync {
-			r.syncSchedulerAccountSnapshots(baseCtx, ids)
+			if updates.Schedulable != nil {
+				r.syncSchedulerSwitchDetached(baseCtx, ids)
+			} else {
+				r.syncSchedulerAccountSnapshots(baseCtx, ids)
+			}
 		}
 	}
 	return rows, nil

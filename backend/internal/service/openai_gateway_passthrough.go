@@ -367,6 +367,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		SetOpsUpstreamModel(c, actualModel)
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		if !reqStream {
+			upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+		}
 		upstreamReq, buildErr := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 		releaseUpstreamCtx()
 		if buildErr != nil {
@@ -2308,11 +2311,16 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	account *Account,
 	originalModel string,
 	mappedModel string,
-) (*openaiNonStreamingResultPassthrough, error) {
+) (_ *openaiNonStreamingResultPassthrough, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
 	}
+	if err := validateControlledNonstreamResponse(resp, body, "responses"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

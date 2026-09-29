@@ -1597,11 +1597,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 	)
 }
 
-func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (_ *openaiNonStreamingResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
 	}
+	if err := validateControlledNonstreamResponse(resp, body, "responses"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

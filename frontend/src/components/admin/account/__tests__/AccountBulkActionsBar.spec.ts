@@ -10,6 +10,24 @@ vi.mock('vue-i18n', () => ({
 }))
 
 describe('AccountBulkActionsBar', () => {
+  it('disables both scheduling actions during a pending selected-account update', async () => {
+    const wrapper = mount(AccountBulkActionsBar, {
+      props: { selectedIds: [1], totalResults: 1, selectingAll: false, allResultsSelected: true, schedulingBusy: true }
+    })
+    const buttons = wrapper.findAll('button').filter(button => /enableScheduling|disableScheduling/.test(button.text()))
+    expect(buttons).toHaveLength(2)
+    for (const button of buttons) {
+      expect(button.attributes('disabled')).toBeDefined()
+      expect(button.attributes('aria-busy')).toBe('true')
+      await button.trigger('click')
+    }
+    expect(wrapper.emitted('toggle-schedulable')).toBeUndefined()
+    await wrapper.setProps({ schedulingBusy: false })
+    await buttons[0].trigger('click')
+    expect(wrapper.emitted('toggle-schedulable')).toEqual([[true]])
+    wrapper.unmount()
+  })
+
   it('allows selecting all results before any row is selected', async () => {
     const wrapper = mount(AccountBulkActionsBar, {
       props: {

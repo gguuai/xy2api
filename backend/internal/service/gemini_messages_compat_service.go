@@ -616,6 +616,40 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 		}
 	}
 
+	if s.controlledScheduling != nil {
+		r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, "", "")
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			r.mu.Lock()
+			r.Auxiliary = true
+			r.mu.Unlock()
+			pool := make([]*Account, 0, len(accounts))
+			for i := range accounts {
+				pool = append(pool, &accounts[i])
+			}
+			eligible := func(a *Account) (bool, string) {
+				if a == nil || !a.IsSchedulable() || a.Platform != PlatformGemini || rank(a) >= 999 {
+					return false, "endpoint_unavailable"
+				}
+				simpleUngrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+				if !simpleUngrouped && !openAIStickyAccountMatchesGroup(a, groupID) {
+					return false, "group_mismatch"
+				}
+				if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
+					return false, "quota_exhausted"
+				}
+				return true, "eligible"
+			}
+			selected, err := s.controlledScheduling.selectAccount(ctx, r, pool, eligible, nil, false)
+			if err != nil {
+				return nil, err
+			}
+			return selected.Account, nil
+		}
+	}
+
 	var selected *Account
 	for i := range accounts {
 		acc := &accounts[i]
@@ -659,7 +693,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 	return s.hydrateSelectedAccount(ctx, selected)
 }
 
-func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (_ *ForwardResult, retErr error) {
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
@@ -844,6 +878,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
 	}
 
+	if useUpstreamStream && !req.Stream {
+		ctx = withControlledBufferedResponse(ctx)
+	}
 	var resp *http.Response
 	signatureRetryStage := 0
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
@@ -1003,6 +1040,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		break
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if useUpstreamStream && !req.Stream {
+		defer finishControlledNonstreamResponse(resp, &retErr)
+	}
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
@@ -1149,9 +1189,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := collectGeminiSSE(resp.Body, true)
+			collected, usageObj, stats, err := collectGeminiSSEObserved(resp.Body, true, nil)
 			if err != nil {
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
+			}
+			if stats.sawDone {
+				markControlledNonstreamTerminal(resp)
+			}
+			if err := validateControlledGeminiCollection(resp, collected, stats.terminalResponse); err != nil {
+				return nil, err
 			}
 			collectedBytes, _ := json.Marshal(collected)
 			upstreamResponseModelObserverFromContext(c).ObserveGemini(collectedBytes)
@@ -1200,7 +1246,7 @@ func isGeminiSignatureRelatedError(respBody []byte) bool {
 	return strings.Contains(msg, "thought_signature") || strings.Contains(msg, "signature")
 }
 
-func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (*ForwardResult, error) {
+func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (_ *ForwardResult, retErr error) {
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
@@ -1388,6 +1434,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Unsupported account type: "+account.Type)
 	}
 
+	if useUpstreamStream && !stream {
+		ctx = withControlledBufferedResponse(ctx)
+	}
 	var resp *http.Response
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		upstreamReq, idHeader, err := buildReq(ctx)
@@ -1504,6 +1553,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		break
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if useUpstreamStream && !stream {
+		defer finishControlledNonstreamResponse(resp, &retErr)
+	}
 
 	requestID := resp.Header.Get(requestIDHeader)
 	if requestID == "" {
@@ -1663,6 +1715,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			})
 			if err != nil {
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
+			}
+			if stats.sawDone {
+				markControlledNonstreamTerminal(resp)
+			}
+			if err := validateControlledGeminiCollection(resp, collected, stats.terminalResponse); err != nil {
+				return nil, err
 			}
 			s.finalizeGeminiSSESignal(c, account, false, requestID, best, stats.dataEvents > 0, stats.fallback)
 			b, _ := json.Marshal(collected)
@@ -2136,10 +2194,14 @@ type geminiStreamResult struct {
 	firstTokenMs *int
 }
 
-func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, originalModel string) (*ClaudeUsage, error) {
+func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, originalModel string) (_ *ClaudeUsage, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
+	}
+	if err := validateControlledNonstreamResponse(resp, body, "gemini"); err != nil {
+		return nil, err
 	}
 
 	unwrappedBody, err := unwrapGeminiResponse(body)
@@ -2500,15 +2562,12 @@ func unwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 	return inner
 }
 
-func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsage, error) {
-	collected, usage, _, err := collectGeminiSSEObserved(body, isOAuth, nil)
-	return collected, usage, err
-}
-
 // geminiSSECollectStats 记录一次 SSE 聚合读到的 data 事件数，以及非 data 行的兜底内容。
 type geminiSSECollectStats struct {
-	dataEvents int
-	fallback   *geminiSSEFallbackBody
+	sawDone          bool
+	terminalResponse map[string]any
+	dataEvents       int
+	fallback         *geminiSSEFallbackBody
 }
 
 // collectGeminiSSEObserved 在聚合的同时把每个解包后的事件原文交给 observe（可为 nil）。
@@ -2534,6 +2593,7 @@ func collectGeminiSSEObserved(body io.Reader, isOAuth bool, observe func(rawByte
 				switch payload {
 				case "", "[DONE]":
 					if payload == "[DONE]" {
+						stats.sawDone = true
 						return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, stats, nil
 					}
 				default:
@@ -2557,6 +2617,9 @@ func collectGeminiSSEObserved(body io.Reader, isOAuth bool, observe func(rawByte
 					}
 					if parsed != nil {
 						last = parsed
+						if extractGeminiFinishReason(parsed) != "" || gjson.GetBytes(rawBytes, "promptFeedback.blockReason").String() != "" {
+							stats.terminalResponse = parsed
+						}
 						if u := extractGeminiUsage(rawBytes); u != nil {
 							usage = u
 						}
@@ -2583,6 +2646,63 @@ func collectGeminiSSEObserved(body io.Reader, isOAuth bool, observe func(rawByte
 	}
 
 	return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, stats, nil
+}
+
+// A terminal Gemini chunk can omit content emitted in previous chunks. Validate
+// its actual finish reason together with collected content without changing the
+// legacy payload selected by the converter.
+func validateControlledGeminiCollection(resp *http.Response, collected, terminal map[string]any) error {
+	if resp == nil {
+		return nil
+	}
+	b, ok := resp.Body.(*controlledResponseBody)
+	if !ok || !b.buffered {
+		return nil
+	}
+	b.dispatch.request.mu.Lock()
+	enabled := b.dispatch.request.Policy.Enabled
+	b.dispatch.request.mu.Unlock()
+	if !enabled {
+		return validateControlledNonstreamResponse(resp, nil, "gemini")
+	}
+	validation := make(map[string]any, len(collected))
+	for key, value := range collected {
+		validation[key] = value
+	}
+	if terminal != nil {
+		if feedback, ok := terminal["promptFeedback"]; ok {
+			validation["promptFeedback"] = feedback
+		}
+		candidates, _ := collected["candidates"].([]any)
+		terminalCandidates, _ := terminal["candidates"].([]any)
+		merged := append([]any(nil), candidates...)
+		for index, raw := range candidates {
+			candidate, ok := raw.(map[string]any)
+			if !ok || index >= len(terminalCandidates) {
+				continue
+			}
+			final, ok := terminalCandidates[index].(map[string]any)
+			if !ok {
+				continue
+			}
+			copy := make(map[string]any, len(candidate)+1)
+			for key, value := range candidate {
+				copy[key] = value
+			}
+			if reason, ok := final["finishReason"].(string); ok && reason != "" {
+				copy["finishReason"] = reason
+			}
+			merged[index] = copy
+		}
+		if len(merged) > 0 {
+			validation["candidates"] = merged
+		}
+	}
+	body, err := json.Marshal(validation)
+	if err != nil {
+		return err
+	}
+	return validateControlledNonstreamResponse(resp, body, "gemini")
 }
 
 func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) map[string]any {
@@ -2743,7 +2863,8 @@ type UpstreamHTTPResult struct {
 	Body       []byte
 }
 
-func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Context, resp *http.Response, isOAuth bool, account *Account, upstreamRequestID string) (*ClaudeUsage, error) {
+func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Context, resp *http.Response, isOAuth bool, account *Account, upstreamRequestID string) (_ *ClaudeUsage, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	if s.cfg != nil && s.cfg.Gateway.GeminiDebugResponseHeaders {
 		logger.LegacyPrintf("service.gemini_messages_compat", "[GeminiAPI] ========== Response Headers ==========")
 		for key, values := range resp.Header {
@@ -2756,6 +2877,9 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateControlledNonstreamResponse(resp, respBody, "gemini"); err != nil {
 		return nil, err
 	}
 

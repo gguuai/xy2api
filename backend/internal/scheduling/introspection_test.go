@@ -82,7 +82,7 @@ func TestInspectionReevaluatesBusyProbeAcrossBestEffortTiers(t *testing.T) {
 	degraded := HealthSnapshot{State: HealthDegraded, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Minute).UnixMilli()}
 	raw, err := json.Marshal(degraded)
 	require.NoError(t, err)
-	require.NoError(t, r.store.client.Set(ctx, HealthRedisKey(2, req.Policy.Model, req.Profile, "", "", ""), raw, 0).Err())
+	require.NoError(t, r.store.client.HSet(ctx, HealthRedisKey(2, req.Policy.Model, req.Profile, "", "", ""), "snapshot", raw).Err())
 	options, err := r.Preview(ctx, req)
 	require.NoError(t, err)
 	require.Len(t, options, 2)
@@ -121,7 +121,7 @@ func TestNextRecoveryDoesNotReviveExcludedAccounts(t *testing.T) {
 		h := HealthSnapshot{State: HealthOpen, UpdatedAtMS: now.UnixMilli(), CooldownUntilMS: now.Add(time.Duration(i+1) * time.Second).UnixMilli()}
 		raw, e := json.Marshal(h)
 		require.NoError(t, e)
-		require.NoError(t, r.store.client.Set(ctx, HealthRedisKey(c.AccountID, req.Policy.Model, req.Profile, "", "", ""), raw, 0).Err())
+		require.NoError(t, r.store.client.HSet(ctx, HealthRedisKey(c.AccountID, req.Policy.Model, req.Profile, "", "", ""), "snapshot", raw).Err())
 	}
 	before := m.Dump()
 	next, e := r.NextRecovery(ctx, req)

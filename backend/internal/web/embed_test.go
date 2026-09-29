@@ -648,14 +648,17 @@ func TestFrontendServer_Middleware(t *testing.T) {
 		router := gin.New()
 		router.Use(server.Middleware())
 
-		// Request for existing static file
+		// The built-in public logo is SVG; verify the actual embedded asset.
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/logo.png", nil)
+		req := httptest.NewRequest(http.MethodGet, "/logo.svg", nil)
 		router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")
+		assert.Contains(t, w.Header().Get("Content-Type"), "image/svg+xml")
 		assert.Empty(t, w.Header().Get("Cache-Control"))
+		expectedLogo, err := fs.ReadFile(server.distFS, "logo.svg")
+		require.NoError(t, err)
+		assert.Equal(t, expectedLogo, w.Body.Bytes())
 
 		entries, err := fs.ReadDir(server.distFS, "assets")
 		require.NoError(t, err)
@@ -735,11 +738,11 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 		router.Use(middleware)
 
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/logo.png", nil)
+		req := httptest.NewRequest(http.MethodGet, "/logo.svg", nil)
 		router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")
+		assert.Contains(t, w.Header().Get("Content-Type"), "image/svg+xml")
 	})
 
 	t.Run("serves_index_html_for_root", func(t *testing.T) {

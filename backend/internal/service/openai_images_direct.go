@@ -204,7 +204,8 @@ func codexDirectImagesUsage(body []byte) (OpenAIUsage, bool) {
 	return usage, true
 }
 
-func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp *http.Response, c *gin.Context, parsed *OpenAIImagesRequest) (OpenAIUsage, int, []string, error) {
+func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp *http.Response, c *gin.Context, parsed *OpenAIImagesRequest) (_ OpenAIUsage, _ int, _ []string, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		if shouldClassifyOpenAIUpstreamStreamReadError(err) {
@@ -214,6 +215,13 @@ func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp 
 	}
 	results, err := parseCodexDirectImagesResponse(body)
 	if err != nil {
+		upstreamErr, upstreamError := err.(*OpenAIImagesUpstreamError)
+		if !gjson.ValidBytes(body) || (upstreamError && IsOpenAIImagesRetryableUpstreamError(upstreamErr)) {
+			rejectControlledNonstreamResponse(resp, err)
+		}
+		return OpenAIUsage{}, 0, nil, err
+	}
+	if err := validateControlledNonstreamResponse(resp, body, "images"); err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
 	usage, _ := codexDirectImagesUsage(body)

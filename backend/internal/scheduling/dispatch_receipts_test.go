@@ -22,7 +22,7 @@ func runDispatchReceiptChecks(t *testing.T, client *redis.Client) {
 	for _, c := range req.Candidates {
 		data, e := json.Marshal(healthy(time.Now()))
 		require.NoError(t, e)
-		require.NoError(t, client.Set(ctx, HealthRedisKey(c.AccountID, req.Policy.Model, req.Profile, "", "", ""), data, time.Hour).Err())
+		require.NoError(t, client.HSet(ctx, HealthRedisKey(c.AccountID, req.Policy.Model, req.Profile, "", "", ""), "snapshot", data).Err())
 	}
 	// Consume one bootstrapped retry token to make initial credit visible.
 	warm, e := r.AcquireDispatchBudget(ctx, req.Policy, "warmup", true)

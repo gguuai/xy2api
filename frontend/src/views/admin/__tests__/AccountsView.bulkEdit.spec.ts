@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
@@ -126,6 +127,7 @@ const BulkEditAccountModalStub = {
 
 describe('admin AccountsView bulk edit scope', () => {
   beforeEach(() => {
+  useSchedulingModeStore().document = { mode: 'sub2api', version: 1 }
     localStorage.clear()
 
     listAccounts.mockReset()

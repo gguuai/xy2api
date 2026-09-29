@@ -16,26 +16,6 @@ func NewDispatchID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-func admitControl(ctx context.Context, tx *sql.Tx, c ControlSnapshot, sessionID string) error {
-	if c.State == ControlRunning {
-		return nil
-	}
-	if c.Mode != "session_drain" || (c.State != ControlDraining && c.State != ControlUncertain) || sessionID == "" {
-		return ErrControlBlocked
-	}
-	result, err := tx.ExecContext(ctx, "UPDATE scheduling_session_grants SET remaining_turns=remaining_turns-1 WHERE scope=$1 AND subject_id=$2 AND epoch=$3 AND session_id=$4 AND remaining_turns>0 AND expires_at>NOW()", c.Scope, c.SubjectID, c.Epoch, sessionID)
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrControlBlocked
-	}
-	return nil
-}
 
 // BeginDispatch linearizes before the network send. A committed ticket is in-flight
 // even if its first network byte occurs after a subsequent pause acknowledgement.
@@ -94,15 +74,13 @@ func (s *PostgresStore) BeginDispatch(ctx context.Context, r DispatchRequest) (D
 	if exists {
 		return ticket, ErrAttemptIdentity
 	}
-	if err = admitControl(ctx, tx, fc, r.SessionID); err != nil {
-		return ticket, err
-	}
-	if err = admitControl(ctx, tx, ac, r.SessionID); err != nil {
-		return ticket, err
-	}
+	// Retired manual controls are not admission gates. Their rows remain as
+	// transaction mutexes and historical ticket epochs; only the account switch
+	// below decides whether a new request may start. Existing attempts are never
+	// cancelled by changing that switch.
 	if r.HardConcurrency > 0 {
 		var active int
-		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduling_attempts WHERE account_id=$1 AND state<>'settled'", r.AccountID).Scan(&active); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduling_attempts WHERE account_id=$1 AND "+admissionOccupancySQL(""), r.AccountID).Scan(&active); err != nil {
 			return ticket, err
 		}
 		if active >= r.HardConcurrency {
@@ -111,18 +89,28 @@ func (s *PostgresStore) BeginDispatch(ctx context.Context, r DispatchRequest) (D
 	}
 	var schedulable bool
 	var status string
-	if err = tx.QueryRowContext(ctx, "SELECT schedulable,status FROM accounts WHERE id=$1 AND deleted_at IS NULL", r.AccountID).Scan(&schedulable, &status); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT schedulable,status FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR SHARE", r.AccountID).Scan(&schedulable, &status); err != nil {
 		return ticket, err
 	}
-	if status != "active" || (!schedulable && ac.Mode != "session_drain") {
+	if status != "active" || !schedulable {
 		return ticket, ErrControlBlocked
 	}
 	ticket.AccountEpoch = ac.Epoch
 	ticket.FamilyEpoch = fc.Epoch
+	if r.Failure != nil && r.Failure.AccountID != r.AccountID {
+		return ticket, ErrInvalidControl
+	}
+	if err = admitFailureDomains(ctx, tx, r.Failure); err != nil {
+		return ticket, err
+	}
 	err = tx.QueryRowContext(ctx, "INSERT INTO scheduling_attempts(ticket_id,request_id,account_id,family_id,session_id,node_id,account_epoch,family_epoch,state,lease_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'dispatched',NOW()+($9 * INTERVAL '1 millisecond')) RETURNING lease_until", ticket.TicketID, r.RequestID, r.AccountID, family, r.SessionID, r.NodeID, ac.Epoch, fc.Epoch, r.LeaseDuration.Milliseconds()).Scan(&ticket.LeaseUntil)
 	if err != nil {
 		return ticket, err
 	}
+	if err = persistFailureAdmission(ctx, tx, ticket.TicketID, r.Failure); err != nil {
+		return ticket, err
+	}
+	ticket.Failure = r.Failure
 	if r.SessionID != "" {
 		_, err = tx.ExecContext(ctx, "INSERT INTO scheduling_owner_sessions(account_id,family_id,session_id) VALUES($1,$2,$3) ON CONFLICT(account_id,session_id) DO UPDATE SET last_seen_at=NOW()", r.AccountID, family, r.SessionID)
 		if err != nil {
@@ -225,9 +213,9 @@ func (s *PostgresStore) RecordTerminalIntent(ctx context.Context, ticketID, outc
 	result, err := s.db.ExecContext(ctx, `UPDATE scheduling_attempts
 		SET metrics = metrics || jsonb_build_object(
 			'terminal_intent', true,
-			'terminal_outcome', $2,
-			'terminal_certainty', $3,
-			'terminal_usage_pending', $4)
+			'terminal_outcome', $2::text,
+			'terminal_certainty', $3::text,
+			'terminal_usage_pending', $4::boolean)
 		WHERE ticket_id=$1 AND state<>'settled'`, ticketID, outcome, certainty, usagePending)
 	if err != nil {
 		return err
@@ -297,14 +285,19 @@ func (s *PostgresStore) MarkAttemptUnknown(ctx context.Context, ticketID string)
 	if err := s.ready(); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, "UPDATE scheduling_attempts SET state='unknown',usage_pending=NOT usage_acknowledged WHERE ticket_id=$1 AND state='dispatched'", ticketID)
+	// Called after local cancellation/termination. A short hold prevents immediate
+	// reuse; the existing failure cooldown still requires a single recovery probe.
+	// Idempotent retries cannot extend the hold or invent a remote terminal result.
+	_, err := s.db.ExecContext(ctx, "UPDATE scheduling_attempts SET state='unknown',usage_pending=NOT usage_acknowledged,local_finished_at=NOW(),unknown_hold_until=LEAST(lease_until,NOW()+INTERVAL '30 seconds') WHERE ticket_id=$1 AND state='dispatched'", ticketID)
 	return err
 }
 func (s *PostgresStore) ReconcileExpired(ctx context.Context) (int64, error) {
 	if err := s.ready(); err != nil {
 		return 0, err
 	}
-	r, err := s.db.ExecContext(ctx, "UPDATE scheduling_attempts SET state='unknown',usage_pending=NOT usage_acknowledged WHERE state='dispatched' AND lease_until<=NOW()")
+	// A crashed holder cannot keep capacity forever. Do not start another shadow
+	// period on each reconciliation, and do not claim local or remote completion.
+	r, err := s.db.ExecContext(ctx, "UPDATE scheduling_attempts SET state='unknown',usage_pending=NOT usage_acknowledged,unknown_hold_until=lease_until WHERE state='dispatched' AND lease_until<=NOW()")
 	if err != nil {
 		return 0, err
 	}

@@ -23,7 +23,17 @@ func NewRuntime(store *RedisStore) *Runtime { return &Runtime{store: store} }
 
 // Evaluate is pure. Preview reads shared health but neither reserves a slot nor
 // changes weighted-round-robin balances, probe leases, or retry credit.
-func Evaluate(req SelectionRequest, snapshots map[int64]HealthSnapshot) ([]Decision, error) {
+func Evaluate(req SelectionRequest, snapshots map[int64]HealthSnapshot) (result []Decision, resultErr error) {
+	if req.Policy.AccountPool {
+		return evaluateAccountPool(req, snapshots)
+	}
+	defer func() {
+		for i := range result {
+			if result[i].HealthFence != nil {
+				result[i].HealthFence.HealthRevision = req.Profile.HealthRevision
+			}
+		}
+	}()
 	p := NormalizePolicy(req.Policy)
 	now := req.Now
 	if now.IsZero() {
@@ -422,7 +432,11 @@ func decisions(p Policy, cs []weightedCandidate) []Decision {
 		if c.effective <= 0 {
 			continue
 		}
-		out = append(out, Decision{AccountID: c.candidate.AccountID, Priority: c.candidate.Priority, PolicyVersion: p.Version, Reason: c.reason, HealthState: c.health.State, TargetShare: c.target, EffectiveShare: c.effective, Probe: probeHealth(c.health.State)})
+		model := c.candidate.HealthModel
+		if model == "" {
+			model = p.Model
+		}
+		out = append(out, Decision{HealthFence: &HealthFence{Model: model, Generation: c.health.Generation, StageRevision: c.health.StageRevision, HealthIdentity: c.candidate.HealthIdentity, State: c.health.State}, AccountID: c.candidate.AccountID, Priority: c.candidate.Priority, PolicyVersion: p.Version, Reason: c.reason, HealthState: c.health.State, TargetShare: c.target, EffectiveShare: c.effective, Probe: probeHealth(c.health.State)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AccountID < out[j].AccountID })
 	return out
@@ -431,13 +445,20 @@ func (r *Runtime) Preview(ctx context.Context, req SelectionRequest) ([]Decision
 	if r == nil || r.store == nil {
 		return nil, ErrSharedState
 	}
-	states, e := r.store.Snapshots(ctx, req)
+	healthRequest := req
+	if req.Policy.AccountPool {
+		healthRequest = accountPoolHealthRequest(req)
+	}
+	states, e := r.store.Snapshots(ctx, healthRequest)
 	if e != nil {
 		return nil, e
 	}
 	return Evaluate(req, states)
 }
 func (r *Runtime) Select(ctx context.Context, req SelectionRequest) (Decision, error) {
+	if req.Policy.AccountPool {
+		return r.selectAccountPool(ctx, req)
+	}
 	if r == nil || r.store == nil {
 		return Decision{}, ErrSharedState
 	}
@@ -553,6 +574,11 @@ func (r *Runtime) Observe(ctx context.Context, o Observation) error {
 	return r.store.Observe(ctx, o)
 }
 func (r *Runtime) AcquireDispatchBudget(ctx context.Context, p Policy, id string, retry bool) (BudgetReservation, error) {
+	if p.AccountPool {
+		// Account pools use the visible per-request ledger and authoritative
+		// dispatch/capacity gates, not a second hidden cross-request quota.
+		return BudgetReservation{}, nil
+	}
 	if r == nil || r.store == nil {
 		return BudgetReservation{}, ErrSharedState
 	}
@@ -580,6 +606,9 @@ func (d Decision) String() string {
 }
 
 func (r *Runtime) CanRetry(ctx context.Context, p Policy) (bool, error) {
+	if p.AccountPool {
+		return true, nil
+	}
 	if r == nil || r.store == nil {
 		return false, ErrSharedState
 	}

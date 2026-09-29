@@ -29,10 +29,14 @@ type ControlledRequest struct {
 	Model              string
 	Protocol           string
 	Reasoning          string
+	Stream             bool
 	ContextTokens      int64 // -1 means unknown; never infer tokens from byte length.
 	SessionID          string
 	ReplaySafe         bool
 	policyLoaded       bool
+	Mode               scheduling.ModeSnapshot
+	modeResolved       bool
+	Auxiliary          bool
 	Policy             scheduling.Policy
 	Profile            scheduling.LatencyProfile
 	Ledger             *scheduling.AttemptLedger
@@ -48,6 +52,7 @@ type ControlledRequest struct {
 	finish             func()
 	currentAttemptID   string
 	gateRejections     int
+	admissionRejected  map[int64]bool // Unsent gate failures; never count as upstream attempts.
 	lastBackoffAttempt int
 }
 
@@ -124,40 +129,42 @@ func (b *schedulingMetadataBody) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-func (r *ControlledRequest) metadata(body []byte) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(body, &fields) != nil || fields == nil {
-		r.mu.Lock()
-		r.Reasoning = "unknown"
-		r.ReplaySafe = false
-		r.mu.Unlock()
+
+// CaptureControlledRequestMetadata reuses the handler's validated body, model
+// and stream (including Gemini URL/action). No context token count is inferred.
+func CaptureControlledRequestMetadata(ctx context.Context, body []byte, model string, stream bool) {
+	r := controlledRequest(ctx)
+	if r == nil {
 		return
 	}
+	r.metadata(body)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.policyLoaded {
+		r.Model = model
+		r.Stream = stream
+	}
+}
+func (r *ControlledRequest) metadata(body []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.policyLoaded {
+		return
+	}
+	fields, replaySafe, valid := readSchedulingMetadata(bytes.NewReader(body), r.Protocol, "root")
+	if !valid {
+		r.Reasoning = "unknown"
+		r.ReplaySafe = false
+		return
+	}
+	r.ReplaySafe = replaySafe
 	if raw, present := fields["model"]; present && json.Unmarshal(raw, &r.Model) != nil {
 		r.ReplaySafe = false
 	}
+	if raw, present := fields["stream"]; present && json.Unmarshal(raw, &r.Stream) != nil {
+		r.ReplaySafe = false
+	}
 	r.Reasoning = controlledReasoningLabel(r.Protocol, fields)
-	var tools []map[string]json.RawMessage
-	if raw, present := fields["tools"]; present && json.Unmarshal(raw, &tools) != nil {
-		r.ReplaySafe = false
-		return
-	}
-	// Native Gemini tools have no required type and may execute server-side.
-	// Conservatively forbid replay of every nonempty native tool declaration.
-	if r.Protocol == "gemini" && len(tools) > 0 {
-		r.ReplaySafe = false
-		return
-	}
-	// Server-executed tools can have externally visible side effects before text.
-	// Such requests require provider idempotency before replay can be safe.
-	for _, tool := range tools {
-		var kind string
-		if json.Unmarshal(tool["type"], &kind) != nil || (kind != "function" && kind != "custom") {
-			r.ReplaySafe = false
-		}
-	}
 }
 
 // Metadata labels describe explicit client choices, not inferred model defaults.
@@ -307,7 +314,13 @@ func (r *ControlledRequest) Close() {
 		fn()
 	}
 	if pending && ctrl != nil {
-		ctrl.releaseDecision(d)
+		parent := r.clientContext
+		if parent == nil {
+			parent = context.Background()
+		}
+		cleanup, stop := controlledPreparationContext(parent, r)
+		ctrl.releaseDecisionContext(cleanup, d)
+		stop()
 	}
 	r.mu.Lock()
 	semantic, attempt := r.semanticAt, r.currentAttemptID
@@ -321,7 +334,7 @@ func (r *ControlledRequest) Close() {
 
 // Install one ledger before body parsing and queues. WS adapters start a new
 // request context for each response.create, rather than sharing a connection one.
-func ControlledSchedulingMiddleware() gin.HandlerFunc {
+func ControlledSchedulingMiddleware(readers ...func(context.Context) (scheduling.ModeSnapshot, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		protocol := "http"
 		if strings.Contains(c.Request.URL.Path, "messages") {
@@ -335,6 +348,22 @@ func ControlledSchedulingMiddleware() gin.HandlerFunc {
 		}
 		ctx := NewControlledRequestContext(c.Request.Context(), protocol)
 		r := controlledRequest(ctx)
+		r.Auxiliary = schedulingAuxiliaryRequest(c.Request)
+		if len(readers) > 0 && readers[0] != nil {
+			readCtx, readDone := context.WithTimeout(ctx, 3*time.Second)
+			mode, err := readers[0](readCtx)
+			readDone()
+			if err != nil || !mode.Mode.Valid() {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "service_unavailable", "message": "Scheduling mode is temporarily unavailable"}})
+				return
+			}
+			r.Mode, r.modeResolved = mode, true
+			if mode.Mode == scheduling.ModeSub2API {
+				c.Request = c.Request.WithContext(ctx)
+				c.Next()
+				return
+			}
+		}
 		c.Header("X-Scheduling-Request-Id", r.ID)
 		c.Request = c.Request.WithContext(ctx)
 		if c.Request.Body != nil {

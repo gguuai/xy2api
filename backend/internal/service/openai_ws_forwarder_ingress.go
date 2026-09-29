@@ -1009,15 +1009,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		wirePayload = qualityRotateBody(wirePayload, s.qualityRotation(ctx, account), true)
 		controlledTerminal := false
+		controlledPreparationFinished := false
 		controlledDispatch, controlledErr := s.controlledScheduling.beginDispatch(ctx, account.ID, account.Concurrency)
 		if controlledErr != nil {
 			return nil, controlledErr
 		}
 		if controlledDispatch != nil {
 			ctx = controlledDispatch.Context()
-			defer func() { controlledDispatch.Finish("websocket_turn", controlledTerminal, forwardErr) }()
+			defer func() {
+				if !controlledPreparationFinished {
+					controlledDispatch.Finish("websocket_turn", controlledTerminal, forwardErr)
+				}
+			}()
 		}
 		if err := controlledDispatch.MarkSent(); err != nil {
+			controlledPreparationFinished = true
+			controlledDispatch.finishPreparationFailure(err)
 			return nil, err
 		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(wirePayload), s.openAIWSWriteTimeout()); err != nil {

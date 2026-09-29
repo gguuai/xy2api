@@ -93,6 +93,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, reqModel, reqStream)
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	pricingCtx, pricingAt := service.WithGatewayTokenRequestPricing(c.Request.Context())

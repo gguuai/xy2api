@@ -1391,7 +1391,8 @@ func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context,
 	return "", false
 }
 
-func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
+func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (_ *ClaudeUsage, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
@@ -1399,6 +1400,10 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	if err != nil {
 		return nil, err
 	}
+	if err := validateControlledNonstreamResponse(resp, body, "messages"); err != nil {
+		return nil, err
+	}
+
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)

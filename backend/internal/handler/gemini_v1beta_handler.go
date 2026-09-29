@@ -339,6 +339,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		return
 	}
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, modelName, stream)
 	setOpsRequestContext(c, modelName, stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(stream, false)))
 	pricingCtx, pricingAt := service.WithGatewayTokenRequestPricing(c.Request.Context())

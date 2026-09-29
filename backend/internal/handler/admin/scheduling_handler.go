@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/liulixin-lex/xy2api/internal/pkg/response"
 	"github.com/liulixin-lex/xy2api/internal/scheduling"
+	"github.com/liulixin-lex/xy2api/internal/server/middleware"
 )
 
 // SchedulingExplainFunc must be read-only: no selection, quota, probe or upstream call.
@@ -63,10 +64,11 @@ func (h *SchedulingHandler) PutPolicy(c *gin.Context) {
 		return
 	}
 	var req struct {
-		GroupID         int64             `json:"group_id"`
-		Model           string            `json:"model"`
-		ExpectedVersion *int64            `json:"expected_version"`
-		Policy          scheduling.Policy `json:"policy"`
+		GroupID             int64             `json:"group_id"`
+		Model               string            `json:"model"`
+		ExpectedVersion     *int64            `json:"expected_version"`
+		ResetHealthProfiles []string          `json:"reset_health_profiles"`
+		Policy              scheduling.Policy `json:"policy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.ExpectedVersion == nil || *req.ExpectedVersion < 0 || req.Model == "" || req.GroupID < 0 {
 		response.BadRequest(c, "Valid group_id, model, expected_version and policy are required")
@@ -78,7 +80,47 @@ func (h *SchedulingHandler) PutPolicy(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	rec, err := h.store.PutPolicy(c.Request.Context(), req.Policy, *req.ExpectedVersion)
+	var rec scheduling.PolicyRecord
+	var err error
+	middleware.SetAuditExtra(c, map[string]any{"config_version": *req.ExpectedVersion, "requested_count": len(req.ResetHealthProfiles)})
+	if len(req.ResetHealthProfiles) > 0 {
+		middleware.SetAuditAction(c, "scheduling.policy.health_reset")
+		resetter, ok := h.store.(scheduling.SchedulingPolicyHealthResetter)
+		if !ok {
+			schedulingError(c, scheduling.ErrSharedState)
+			return
+		}
+		rec, err = resetter.PutPolicyWithHealthReset(c.Request.Context(), req.Policy, *req.ExpectedVersion, req.ResetHealthProfiles)
+	} else {
+		rec, err = h.store.PutPolicy(c.Request.Context(), req.Policy, *req.ExpectedVersion)
+	}
+	if err != nil {
+		schedulingError(c, err)
+		return
+	}
+	response.Success(c, rec)
+}
+
+// RestoreInheritance removes an explicit group override with the same CAS
+// boundary as PUT. The global model policy cannot be removed through this route.
+func (h *SchedulingHandler) RestoreInheritance(c *gin.Context) {
+	restorer, ok := h.store.(scheduling.SchedulingPolicyRestorer)
+	if !ok {
+		schedulingError(c, scheduling.ErrSharedState)
+		return
+	}
+	var req struct {
+		GroupID         int64  `json:"group_id"`
+		Model           string `json:"model"`
+		ExpectedVersion *int64 `json:"expected_version"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ExpectedVersion == nil || *req.ExpectedVersion < 1 || req.GroupID <= 0 || strings.TrimSpace(req.Model) == "" {
+		response.BadRequest(c, "A group override and expected_version are required")
+		return
+	}
+	middleware.SetAuditAction(c, "scheduling.policy.restore_inheritance")
+	middleware.SetAuditExtra(c, map[string]any{"config_version": *req.ExpectedVersion})
+	rec, err := restorer.RestorePolicyInheritance(c.Request.Context(), req.GroupID, strings.TrimSpace(req.Model), *req.ExpectedVersion)
 	if err != nil {
 		schedulingError(c, err)
 		return
@@ -192,4 +234,10 @@ func (h *SchedulingHandler) GetStatistics(c *gin.Context) {
 		return
 	}
 	response.Success(c, result)
+}
+
+// RetiredAccountScheduling preserves an explicit response for saved clients. The
+// original account switch is now the only administrative admission control.
+func (h *SchedulingHandler) RetiredAccountScheduling(c *gin.Context) {
+	response.Error(c, http.StatusGone, "This scheduling control is retired; use the account scheduling switch")
 }

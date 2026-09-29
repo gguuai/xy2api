@@ -101,6 +101,9 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
+	if !reqStream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -1386,7 +1389,7 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 	token string,
 	imageURL string,
 	index int,
-) (string, OpenAIUsage, error) {
+) (_ string, _ OpenAIUsage, retErr error) {
 	body, err := buildGrokComposerImageDescriptionBody(imageURL, index)
 	if err != nil {
 		return "", OpenAIUsage{}, err
@@ -1411,6 +1414,7 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 		return "", OpenAIUsage{}, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
@@ -1454,6 +1458,10 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, nil)
 	if err != nil {
 		return "", OpenAIUsage{}, fmt.Errorf("read grok composer image bridge response: %w", err)
+	}
+
+	if err := validateControlledNonstreamResponse(resp, respBody, "responses"); err != nil {
+		return "", OpenAIUsage{}, err
 	}
 
 	var parsed apicompat.ResponsesResponse

@@ -49,7 +49,7 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 	c *gin.Context,
 	account *Account,
 	body []byte,
-) error {
+) (retErr error) {
 	if account == nil {
 		writeOpenAIResponsesInputTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("responses input_tokens: missing account")
@@ -91,6 +91,7 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 		return fmt.Errorf("responses input_tokens: upstream request failed: %s", safeErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -115,6 +116,9 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 		return fmt.Errorf("responses input_tokens: upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
+	if err := validateControlledNonstreamResponse(resp, respBody, "count_tokens"); err != nil {
+		return err
+	}
 	inputTokens := gjson.GetBytes(respBody, "input_tokens")
 	if !inputTokens.Exists() {
 		writeOpenAIResponsesInputTokensError(c, http.StatusBadGateway, "upstream_error", "Upstream response missing input_tokens")
@@ -258,7 +262,7 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	account *Account,
 	body []byte,
 	defaultMappedModel string,
-) error {
+) (retErr error) {
 	if account == nil {
 		writeAnthropicCountTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("count_tokens: missing account")
@@ -331,6 +335,7 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		return fmt.Errorf("openai input_tokens upstream request failed: %s", safeErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -378,6 +383,9 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		return fmt.Errorf("input_tokens upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
+	if err := validateControlledNonstreamResponse(resp, respBody, "count_tokens"); err != nil {
+		return err
+	}
 	inputTokens := gjson.GetBytes(respBody, "input_tokens")
 	if !inputTokens.Exists() {
 		writeAnthropicCountTokensError(c, http.StatusBadGateway, "upstream_error", "Upstream response missing input_tokens")

@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { defineComponent } from 'vue'
@@ -14,6 +15,8 @@ const {
   getAllProxies,
   getAllGroups,
   refreshCredentials,
+  setSchedulable,
+  bulkUpdate,
   showError,
   showWarning
 } = vi.hoisted(() => ({
@@ -25,6 +28,8 @@ const {
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
   refreshCredentials: vi.fn(),
+  setSchedulable: vi.fn(),
+  bulkUpdate: vi.fn(),
   showError: vi.fn(),
   showWarning: vi.fn()
 }))
@@ -40,7 +45,8 @@ vi.mock('@/api/admin', () => ({
       delete: vi.fn(),
       batchClearError: vi.fn(),
       batchRefresh: vi.fn(),
-      toggleSchedulable: vi.fn(),
+      setSchedulable,
+      bulkUpdate,
       refreshCredentials
     },
     proxies: { getAll: getAllProxies },
@@ -67,6 +73,8 @@ const DataTableStub = defineComponent({
     <div>
       <div v-for="row in data" :key="row.id" :data-account-name="row.name">
         <slot name="cell-groups" :row="row" />
+        <slot name="cell-schedulable" :row="row" />
+        <span data-test="select-account"><slot name="cell-select" :row="row" /></span>
         <slot name="cell-actions" :row="row" />
       </div>
     </div>
@@ -98,10 +106,11 @@ function mountView(stubActionMenu = true) {
     attachTo: document.body,
     global: {
       stubs: {
+        RouterLink: { template: '<a><slot /></a>' },
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>' },
         DataTable: DataTableStub,
-        AccountTableActions: { template: '<div><slot name="after" /></div>' },
+        AccountTableActions: { emits: ['refresh'], template: '<div><button data-test="refresh-accounts" @click="$emit(\'refresh\')">Refresh</button><slot name="after" /></div>' },
         AccountTableFilters: true,
         AccountBulkActionsBar: true,
         Pagination: true,
@@ -158,6 +167,7 @@ const fullAccount = {
 
 describe('admin AccountsView lite account list', () => {
   beforeEach(() => {
+  useSchedulingModeStore().document = { mode: 'sub2api', version: 1 }
     localStorage.clear()
     listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockReset().mockResolvedValue({ notModified: true, etag: 'compact-etag', data: null })
@@ -167,6 +177,8 @@ describe('admin AccountsView lite account list', () => {
     getAllProxies.mockReset().mockResolvedValue([])
     getAllGroups.mockReset().mockResolvedValue([{ id: 7, name: 'codex', platform: 'openai' }])
     refreshCredentials.mockReset()
+    setSchedulable.mockReset().mockImplementation(async (id, schedulable) => ({ id, schedulable }))
+    bulkUpdate.mockReset()
     showError.mockReset()
     showWarning.mockReset()
   })
@@ -174,6 +186,120 @@ describe('admin AccountsView lite account list', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it.each(['controlled', 'sub2api'] as const)('toggles scheduling immediately without a dialog in %s mode', async mode => {
+    useSchedulingModeStore().document = { mode, version: 1 }
+    const wrapper = mountView()
+    await flushPromises()
+    const toggle = wrapper.get('button[role="switch"]')
+    expect(toggle.attributes('type')).toBe('button')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(toggle.attributes('aria-label')).toContain('compact row')
+    await toggle.trigger('click'); await flushPromises()
+    expect(setSchedulable).toHaveBeenLastCalledWith(42, false)
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toMatch(/controlTitle|diagnosticsTitle|failureDomains|globalAccountEnabled/)
+    await toggle.trigger('click'); await flushPromises()
+    expect(setSchedulable).toHaveBeenLastCalledWith(42, true)
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('locks each pending account independently against rapid and interleaved clicks', async () => {
+    listAccounts.mockResolvedValue({ items: [listRow, { ...listRow, id: 43, name: 'second' }], total: 2, page: 1, page_size: 20, pages: 1 })
+    const pending = new Map<number, (value: unknown) => void>()
+    setSchedulable.mockImplementation(id => new Promise(resolve => pending.set(id, resolve)))
+    const wrapper = mountView(); await flushPromises()
+    const toggles = wrapper.findAll('button[role="switch"]')
+    const firstClick = toggles[0].trigger('click')
+    const duplicateClick = toggles[0].trigger('click')
+    await Promise.all([firstClick, duplicateClick])
+    await toggles[1].trigger('click')
+    await toggles[0].trigger('click')
+    expect(setSchedulable).toHaveBeenCalledTimes(2)
+    expect(toggles[0].attributes('aria-busy')).toBe('true')
+    expect(toggles[1].attributes('disabled')).toBeDefined()
+    pending.get(42)!({ id: 42, schedulable: false }); await flushPromises()
+    expect(toggles[0].attributes('disabled')).toBeUndefined()
+    expect(toggles[1].attributes('disabled')).toBeDefined()
+    pending.get(43)!({ id: 43, schedulable: false }); await flushPromises()
+    expect(toggles.every(toggle => toggle.attributes('aria-checked') === 'false')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps the confirmed state and allows retry after a failed scheduling update', async () => {
+    setSchedulable.mockRejectedValueOnce(new Error('temporary failure'))
+    const wrapper = mountView(); await flushPromises()
+    const toggle = wrapper.get('button[role="switch"]')
+    await toggle.trigger('click'); await flushPromises()
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    expect(showError).toHaveBeenCalledWith('admin.accounts.failedToToggleSchedulable')
+    await toggle.trigger('click'); await flushPromises()
+    expect(setSchedulable).toHaveBeenCalledTimes(2)
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('ignores an automatic list response that started before a completed account toggle', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    let resolveList!: (value: unknown) => void
+    listWithEtag.mockReturnValueOnce(new Promise(resolve => { resolveList = resolve }))
+    const wrapper = mountView(); await flushPromises()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(listWithEtag).toHaveBeenCalledTimes(1)
+    const toggle = wrapper.get('button[role="switch"]')
+    await toggle.trigger('click'); await flushPromises()
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    resolveList({ notModified: false, etag: 'stale-before-toggle', data: { items: [listRow], total: 1, pages: 1 } })
+    await flushPromises()
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('preserves the confirmed switch when a manual refresh returns an older account snapshot', async () => {
+    const wrapper = mountView(); await flushPromises()
+    let resolveList!: (value: unknown) => void
+    listAccounts.mockReturnValueOnce(new Promise(resolve => { resolveList = resolve }))
+    await wrapper.get('[data-test="refresh-accounts"]').trigger('click')
+    const toggle = wrapper.get('button[role="switch"]')
+    await toggle.trigger('click'); await flushPromises()
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    resolveList({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
+    await flushPromises()
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('prevents bulk and single-account scheduling writes from racing on selected accounts', async () => {
+    listAccounts.mockResolvedValue({ items: [listRow, { ...listRow, id: 43, name: 'second' }], total: 2, page: 1, page_size: 20, pages: 1 })
+    let finishSingle!: (value: unknown) => void
+    let finishBulk!: (value: unknown) => void
+    setSchedulable.mockReturnValueOnce(new Promise(resolve => { finishSingle = resolve }))
+    bulkUpdate.mockReturnValueOnce(new Promise(resolve => { finishBulk = resolve }))
+    const wrapper = mountView(); await flushPromises()
+    for (const checkbox of wrapper.findAll('[data-test="select-account"] input')) await checkbox.setValue(true)
+    const bar = wrapper.findComponent({ name: 'AccountBulkActionsBar' })
+    const toggles = wrapper.findAll('button[role="switch"]')
+    await toggles[0].trigger('click')
+    bar.vm.$emit('toggle-schedulable', false); await flushPromises()
+    expect(bulkUpdate).not.toHaveBeenCalled()
+    finishSingle({ id: 42, schedulable: false }); await flushPromises()
+    bar.vm.$emit('toggle-schedulable', true); await flushPromises()
+    bar.vm.$emit('toggle-schedulable', false)
+    await toggles[1].trigger('click')
+    expect(bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(bulkUpdate).toHaveBeenCalledWith([42, 43], { schedulable: true })
+    expect(setSchedulable).toHaveBeenCalledTimes(1)
+    expect(toggles.every(toggle => toggle.attributes('disabled') !== undefined)).toBe(true)
+    finishBulk({ success: 2, failed: 0 }); await flushPromises()
+    expect(toggles.every(toggle => toggle.attributes('aria-checked') === 'true')).toBe(true)
+    expect(toggles.every(toggle => toggle.attributes('disabled') === undefined)).toBe(true)
+    wrapper.unmount()
   })
 
   it('keeps lite=1 on the initial list request', async () => {

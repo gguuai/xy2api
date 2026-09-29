@@ -4,6 +4,78 @@
 
 ## 当前交接状态
 
+### 0.2.1 远端推送与正式发布（2026-09-29，进行中）
+
+- 用户已明确授权“现在进行远端推送和发版0.2.1”。发布副本为 /xy2/release-0.2.1（release/0.2.1），从已冻结、已部署验收的 one-click 候选复制，原源码和测试站保持。
+- 远端 origin 为 liulixin-lex/xy2api；继续现有 PR #71，正常快进推送、保护检查通过后常规合并，再创建不可移动的 annotated v0.2.1 并使用既有 Release 工作流。
+- 只晋级产品 VERSION 与 UPSTREAM_BASE.json 的 xy2api_version；Sub2API 兼容版本 0.2.8 保持。前端 package.json 的 1.0.0 是包元数据，不作为产品版本。
+- 测试站已于 2026-09-29 15:25 UTC 实际替换为一键调度镜像 b86d18e81e13，313 条迁移；本机/公网与独立复核通过，保留 controlled/version2。下方冻结记录的“未部署”是当时历史事实，非当前状态。
+- 发布执行与最终 SHA、CI、附件、GHCR 及角色证明写入 /xy2/artifacts/scheduling-optimization-20260928/release-0.2.1；复用同一四角色并保留发布前副本。正式标签未创建前不宣称已发布。
+
+
+### 一键账号调度简化（2026-09-29，源码冻结与交付验收）
+
+- 唯一候选 /xy2/artifacts/scheduling-optimization-20260928/one-click-scheduling-20260929/work，分支 fix/scheduling-one-click-20260929；冻结的 dual-mode-20260929/work 共4549源文件已逐一核对，原字节保持。最终交付和门禁状态以本轮外部 STATE.json、BACKEND_GATES.json、BUILD.json、STARTUP_RESULT.json、FINAL_DELIVERY.json 为准，源码冻结后不为更新测试数字重写业务。
+- accounts.schedulable 是唯一管理员开关：列表直接开启/关闭，只影响该账号。关闭停止新准入、已开始请求自行结束；批量只影响选中账号。旧暂停弹窗、作用范围、共用额度/服务域配置及故障诊断排查前端已删除，旧入口返回410。旧表只保留历史，不参与新准入。
+- 两模式保持：系统设置 sub2api / controlled。可控页面只保留策略分组、账号顺序与分配比例、等待与自动换号；每组账号优先级/权重共用于所有模型，同级合格账号用尽再降级，并始终受总次数与总等待约束，先取消再换号。强续接所有者和已输出内容不可透明跨账号重放。
+- migration265只把历史单账号暂停转为通用关闭，不因旧家族/共享控制联动其他账号，不猜测自动启用。HTTP开关严格拒绝缺失/null/错误类型/额外字段/尾随JSON；普通管理员编辑锁后保留当前开关，防止并发编辑覆盖。前端每账号提交锁、批量互斥及旧列表响应保护均已加入。
+- 独立反例发现两层缓存问题并闭环：开启后仅更新对象不能恢复候选成员；旧快照即使激活被fence仍可覆盖共享metadata。现仅开关变动使受影响组桶失效且保留退休状态；所有账号缓存写入以严格单调updated_at原子CAS，v2键隔离无版本旧缓存。migration266在数据库行锁下令updated_at=max(OLD+1微秒,clock_timestamp())，无新配置/Ent字段，不改变其他业务列。独立真实miniredis接入原始Anthropic选择路径已改选备用账号，所有旧反例保留。
+- 已观测：前端353文件/2692测试、ESLint/i18n/type/Vite构建通过；真实浏览器60断言/11截图、无未捕获异常或未匹配API；最终一键真实PG/Redis race门禁38PASS/0FAIL/0SKIP，涵盖SSE当前请求收尾、WS当前回合完成且下一回合无新增上游写入、迁移与24并发数据库修订。独立缓存8主测试/6子分支通过，44有效桶和22退休桶范围保持；最新全量lint退出0。
+- 首轮full03实际exit1（3类旧断言），已按账号局部429、PG本地故障门及真实WS终态修正；新全量unit与广泛race以BACKEND_GATES.json具体command/exit为准，不把旧失败进程说成通过。镜像新装与311→新清单→恢复311的真实启动/API/迁移/回滚以STARTUP_RESULT.json为准；源码累计事务oneclick-final-01与固定四角色通过后方可交付。
+- 固定四角色仍为 /xy2/artifacts/scheduling-optimization-20260928/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}；ROLLBACK.sh仅恢复离线源码副本，不代替运行站点数据库回滚。日常说明见docs/account-scheduling.md，前端规范见docs/ui-scheduling-one-click.md；new-api参考已固定commit 789c970199ea527e6a26e071915f4a4cd2c64178，保留本项目小优先级先用/同级耗尽/强owner规则。
+- 本轮未推送、合并或替换测试站；测试站仍是此前实际部署的dual-mode镜像27cf5dca5007、311迁移。没有真实供应商/计费调用，不以本地合成验证承诺生产首字或零潜在问题。
+
+### 双模式调度重构（2026-09-29，源码冻结与交付验收）
+
+- 唯一候选为 /xy2/artifacts/scheduling-optimization-20260928/dual-mode-20260929/work，分支 refactor/dual-scheduling-20260929。原 rewrite-20260929/work 与 release-0.2.0 保持。最新源码、镜像、验证与四角色状态统一查 dual-mode-20260929/STATE.json、FINAL_DELIVERY.json；下方分组重写“未部署”为当时冻结记录，当前测试站实际仍运行前轮a59084镜像。
+- 系统设置仅 sub2api / controlled 两种模式，默认保留当前controlled。前者恢复本项目集成的 Wei-Shaw/sub2api v0.2.8 选择算法与原设置；后者按分组账号priority/traffic_weight选择。每请求固定模式，WebSocket下一轮重新读取，读取异常不静默切换。mode专表CAS与通用settings隔离。
+- 同级合格账号耗尽才降级，总次数/总等待仍约束；每账号每请求一次，先取消后换号，输出提交和强续接所有者边界保持。无逐模型权重、优先级或等待配置；group0标准/简易范围保持。
+- migration263保存模式；旧暂停未保留通用开关原值，不猜测自动启用，管理员须核对历史停用。新暂停不再修改通用启用。migration264把未知结果本地容量占用设为有界，保留账务及人工暂停不确定性；独立租约到期监护保证数据库轮询阻塞时仍取消本地HTTP。
+- 每次恢复探针递增代次，旧成功/失败回调不能误开新探针。该P1已真PG复现后修复，旧成功old7/new7/错误放行变为old8/new9/拒绝第三次；旧失败及Redis token fencing同样实测。原未知永久占位也保留7天过期仍卡住的原始复现和修后证明。
+- 100账号候选预检从600查询降到3（另有1次容量读取）；20次隔离PG基准173.003ms→2.931ms，仅为预检，不是端到端首字。无跨请求缓存，最终发送前仍锁定复核。辅助token/模型查询独立加权分配，不占生成槽、attempt或恢复探针。
+- 前端359文件/2715测试、类型、ESLint、生产构建均exit0；真实Chromium53断言、11截图、0pageerror、0未匹配API，仅故意409/503日志。后端模式真实PG/Redis19PASS；关键race716PASS/1SKIP；完整核心包最终race255PASS/4SKIP。全后端运行唯一剩余失败是probe新代次使旧测试使用过期版本；只强化该测试后整个核心包重跑0，其他全部包及生产源码未变，组合结果和41个跳过见BACKEND_GATES.json，不能把原full进程exit1说成exit0。
+- 静态CGO_ENABLED=0/embed构建已通过；binary113df4f653d71b6ba2eac442c0e4c700a83bbce609c8c08f0c1685aad19b8fd9，镜像sha256:27cf5dca50074156bf64dc2d37c6afba7b2dc749299a8257560a4ca3e2d6334d。构建后仅测试断言及此交接记录更新，交付须核对运行源码/前端/dist与BUILD.json快照一致。
+- 真镜像隔离fresh311、BASELINE309→MODIFIED311→ROLLBACK309通过；四阶段health/login200，模式API404→200→404，双模式CAS/400/401/409与重启持久化、分组API和资源哈希通过，数据库/Redis/应用目录标记保留。首次恢复辅助容器权限失败后仅修helper为root入口，完整重验通过，失败记录保留；12自有资源已清理。
+- 固定四角色沿用 /xy2/artifacts/scheduling-optimization-20260928/{MODIFIED_FILE.tar,DIFF_FILE.patch,VERIFICATION.txt,ROLLBACK.sh}，新累计源码事务身份dual-final-01。最终是否封装完成以其PUBLISHED.json与外部FINAL_DELIVERY.json为准；源码冻结后不再改业务。离线ROLLBACK.sh不用于在线数据库降级。
+- 本轮未替换真实测试站、未推送或合并；前一轮测试站替换是已完成历史任务。无真实供应商调用，不以合成请求或局部基准承诺生产首字/计费或零风险。日常操作见docs/account-scheduling.md，界面规范见docs/ui-scheduling-dual-mode.md。
+
+### 分组账号调度全面重写（2026-09-29，本地实现完成，未部署）
+
+- 当前唯一候选为 `/xy2/artifacts/scheduling-optimization-20260928/rewrite-20260929/work`，分支 `refactor/group-account-scheduling-20260929`，起点 `89683d2e966c2d9621ddd4969962679aca01fd8e`。原发布源码、原工作树与旧测试站保持。本轮没有推送、合并或部署；下方 PR #71 与旧测试站是历史状态。
+- 新配置按 `group_id + account_id` 保存 `priority / traffic_weight`，所有模型共用；模型只参与能力筛选和必要故障范围。数字越小越优先，同级共享加权轮询。同级合格且尚未尝试的账号用尽后才降级，统一总次数、总等待和每账号一次仍有效，预算耗尽不能跳过剩余同级账号强行降级。
+- 新增迁移262与带版本比较的分组 GET/PUT API；旧逐模型策略不导入新运行配置，旧策略接口返回410。组0在普通模式限未分组账号，简易模式取全部账号；新成员默认继承已有账号优先级和权重1。新管理页支持行内、批量、跨组独立设置、冲突保留草稿与手机卡片；使用说明见 `docs/account-scheduling.md`。
+- 默认单次等待120秒、总等待240秒、最多3个实际账号，每组可调。先取消当前尝试再换号，不并发抢答；有效输出后或强制续接同账号时不透明迁移。非流式同样使用单次与剩余总预算较小值，不伪造首字样本；客户端取消和本地准备失败不污染上游健康。
+- 最新全后端命令 `root-backend-final-06` 的全部业务包通过，唯一失败为schema生成测试无法向只读挂载创建 `.entc`；同一源码可写副本 `root-schema-writable-07` 已实际通过该包。生产embed构建通过。前端全量357文件/2698项通过后，最终迁移提示增量43项、类型、lint、构建与真实Chromium24项检查通过；浏览器使用本地合成API。失败历史完整保留。
+- 独立只读复审未发现新增P0/P1；实际PG/Redis关键调度与服务race通过（core4.070s、service77.144s）。静态检查指出的测试类型断言和自定义interface{}→any格式要求已修正，相关定向回归通过；最终静态检查退出码见 `root-lint-final-13.command.json`，不把早期非零退出算作通过。业务源码在这些测试规范修正中没有变化。
+- 使用已构建候选实际验证新装309条迁移、旧版308→候选309→恢复数据库及应用目录快照回退308，四次health/login均200，数据库、Redis与应用目录标记保持。新装/升级的真实JWT分组API完成GET200、保存200、旧版本冲突409与回读保持；使用空账号组0及合成管理员，无真实上游。四个应用均正常退出，自有隔离资源已清理；证据位于 `rewrite-20260929/startup-ref-20260929t071818z-db3115`。
+- 固定四角色仍位于 `/xy2/artifacts/scheduling-optimization-20260928`，本轮源码事务使用 `rewrite-final-01` 身份；最终状态以 `FINAL_DELIVERY.json`、`FINAL_VERIFICATION.json` 和 `rewrite-20260929/transaction-runs/rewrite-final-01/PUBLISHED.json` 为准。事务验证同输入三态、累计补丁重建、恢复原字节和执行位，并保留旧工件备份；只有最终发布记录存在才算封装完成，旧final09或双源码预检不能替代新三态。
+- 不宣称真实供应商、线上首字分布或计费取消已经验证，也不承诺零潜在问题。
+
+### 调度优化 PR #71 与独立测试部署（2026-09-28，已部署）
+
+- 已按用户授权提交并推送 `feat/scheduling-reliability-20260928`，PR #71：https://github.com/liulixin-lex/xy2api/pull/71，目标main，保持开放未合并。功能提交 `da829ac73a9f992e85fb8c68c4de143c70667513` 的18项远端CI检查实际全部SUCCESS；后续交接文档提交的最新检查以PR对应head及artifact/ci记录为准。
+- 本机独立测试站 `https://test.aiaimax.cyou` 已上线，Compose项目 `xy2-test-aiaimax`，app仅监听127.0.0.1:8093。PostgreSQL、Redis、持久卷、网络、JWT及加密密钥均独立，使用fresh数据库，未复制开发账号/配置；现有15个开发容器身份、启动时间、镜像、挂载与网络保持一致。
+- 部署镜像 `sha256:0aa94a726b874092521e0ce62d3cf9d47daad1696389155ce59a9fc1ec3a679d` 的revision标签绑定功能提交da829ac；实际运行binary为已验收的 `0bc78c3b43321d4b22c00283a2a4032415162966d81a6879a8555da488a5bdd3`。本轮提交和部署没有修改final09已验收后端或前端源码。
+- 公网health、首页、登录页和真实管理员登录均200；308条迁移，1管理员/0上游账号/0 API Key，注册403，6个JS/CSS资源哈希匹配。新项目三个容器重启后数据库设置、Redis/app持久标记、配置与登录保持。
+- Caddy仅追加test→8093并平滑reload，原开发域名路由及PID保持；域名A原已指向本机，无DNS变更。可信HTTPS和域名校验通过，HTTP308跳转HTTPS；Let’s Encrypt证书有效至2026-12-27，由既有Caddy自动续期机制管理。
+- 新管理员尚需本人首次登录确认平台声明；只读调度策略/统计接口实测返回423 ADMIN_COMPLIANCE_ACK_REQUIRED，未绕过或代用户确认。注册关闭及测试站点名称通过新库运维初始化设置；默认legacy，不自动添加上游、策略或模型阈值。
+- 凭据仅保存在本机 `/xy2/deployments/test-aiaimax/.env`（0600、父目录0700），不写入Git/PR/记忆。运维、停启及回退见该目录README.md、DEPLOYMENT.json、evidence和proxy证据。现场回退仅在显式执行时下线测试站，本轮只在副本验证代理回滚；原开发服务继续运行。
+- 当前四角色仍固定于 `/xy2/artifacts/scheduling-optimization-20260928`；部署前final09归档已保存到pr-test-deploy-20260928/pre-pr-final09。最终当前文档树的三态证明使用 `pr-test-final-01` 身份，原五门禁继续绑定final09不重复冒称新执行；当前汇总以FINAL_DELIVERY.json及PR_TEST_DEPLOY_RESULT.json为准。
+
+### 可控调度实现与本地验收基线（2026-09-28，final09部署前记录）
+
+- 原发布源码 `/xy2/release-0.2.0` 保持原字节，修改位于 `/xy2/artifacts/scheduling-optimization-20260928/work` 的 `feat/scheduling-reliability-20260928`。默认仍为 legacy；controlled 尚未上线，没有推送、合并或真实付费上游调用。
+- 完成终态与故障意图原子持久化、UNKNOWN 权威占位及补偿；可用性与首字延迟证据分离、渐进冷启动恢复；显式共享故障域、身份修订隔离、统一尝试预算及管理恢复入口。
+- 复审修复非流式验收前提前恢复健康、错误诊断正文卡住、故障反馈队列阻塞/历史扫描，以及强制 SSE 缓冲转换错误。真实本地 HTTP/SSE 回归覆盖 Responses/Chat/Messages、原生 Anthropic、Antigravity、Gemini Code Assist 与图片；缓冲完成不伪造首字样本。
+- Account 模型/头映射的共享延迟缓存存在已实证竞态，已改为无共享写解析。组合 getter 微基准从约0.30微秒/0alloc变为0.72–0.79微秒/1024B/7alloc；该取舍保证值复制与并行读取安全，不把微基准当生产吞吐结论。
+- 新开独立审查 agent 在两个代码分支中实证并修复三类问题：显式模型范围扩大为整个共享池；流式请求拒绝被算供应商故障并允许重放；取消/嵌套失败/畸形JSON终态误判。11个失败反例均已修复，独立回滚重现原11反例且15条观察输出逐字相同；五文件补丁重建一致。
+- final09 冻结后端3548文件，SHA256为 `77d8996cf2d844cbd2f6bc5035a402437f630dbb9dbcfafaee54acc8ad11479f`。五门禁实际通过：全量unit按测试名去重22,828 PASS/38 SKIP，六个受影响包race 19,687 PASS/17 SKIP，均0FAIL；全部29项指定必测在两者均PASS。build、lint及93项embed测试通过，源码与脚本前后无漂移。
+- 两个跨进程父测试实际通过：共享准入/UNKNOWN占位与Redis丢失后故障域单探测。SKIP单列，包括父测试专用worker入口及付费上游/非调度模块的opt-in条件，不计为通过。
+- 最终生产embed二进制SHA256为 `0bc78c3b43321d4b22c00283a2a4032415162966d81a6879a8555da488a5bdd3`。final09 实际启动演练305条迁移基线→308候选→恢复305→全新308，健康/登录均200，用户/配置/数据库-Redis-数据卷标记及嵌入JS字节验证通过；使用隔离资源，未操作生产。
+- 前端952源文件和两份导入法律文档与此前通过版本逐文件相同，复用356文件/2690用例与type/lint/build证据；未宣称本轮重新执行前端测试。生产构建另绑定183个生成资源；源码归档不包含忽略的生成dist。
+- 四角色仍为该artifact目录的 MODIFIED_FILE.tar、DIFF_FILE.patch、VERIFICATION.txt、ROLLBACK.sh。当前归档的同输入三态、补丁重建与哈希恢复以 `FINAL_VERIFICATION.json` 的 final-09 记录为准，联合交付一致性以 `FINAL_DELIVERY.json` 为准；不借用旧 complete 标记。源码回滚仅作用于离线副本，实际数据库恢复演练另有记录。
+- 结论限于已记录的本地源码、真实隔离存储、跨进程和协议夹具验收；生产灰度、真实供应商联调及线上效果测量未执行。独立审查报告见 review-fixes-20260928/comprehensive-audit/audit_controlled_final/REVIEW.md；完整边界见 docs/CONTROLLED_SCHEDULING_ACCEPTANCE.md 最新补充节。
+
 ### XY2API 0.2.0 发布与验收完成（2026-09-28，生产未部署）
 
 - 冻结上游 Sub2API 稳定 annotated tag v0.2.8，tag object d7a82d78ca51d42be41cb4daa3510ea401defe9f，目标/本轮共同祖先 fd80b08c90b55edcad5b00171b53f08721d30da1。该稳定版已由 PR #62 合入；冻结的 upstream/main 仅多一个 VERSION 同步提交 a3eb7ef302961cba716dc78b39b93b60c467db0e。使用既有 sync.py 生成 docs/upstream-sync/v0.2.8-main-delta.json，没有重复 merge 或覆盖二开。
@@ -332,6 +404,27 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
+- 20260929-release-0.2.1：根代理负责整理已验收源码、晋级 0.2.1、快进更新 PR #71、门禁/合并/标签/Release 和远端制品验收；原冻结工作树与在线测试站不改。
+
+### 20260929-dual-scheduling — 实施中
+- 按用户最新要求，系统设置提供 Sub2API 原版调度与可控智能调度两种模式，运行路径和界面分别隔离；保留已有分组账号优先级/权重，不增加逐模型配置。
+- 候选 /xy2/artifacts/scheduling-optimization-20260928/dual-mode-20260929/work；冻结的当前 test 源码保持不动。模式切换只影响新请求，已有请求保持开始时模式；默认与迁移行为须显式验证。
+- 前端使用 design-taste-frontend、impeccable、GSAP；后端参考固定上游版本及用户列出的仓库，验证失败换号、预算、输出提交、取消、恢复和模式切换。
+- 本轮不操作生产或远端发布；本机 test 仍为已验证 a59084 镜像，是否更新以实际执行记录为准。
+
+
+### 20260929-group-account-scheduling-rewrite — 本地源码交接完成
+- 当前实现与实测边界见顶部；冻结后的封装状态仅由本轮固定FINAL_DELIVERY/FINAL_VERIFICATION及rewrite-final-01事务记录更新，不再修改归档中的源码来回填封装结果。发布及真实上游灰度尚未执行。禁止重新运行旧final07控制器或据历史部署记录误认为本候选已上线。
+
+### 20260928-scheduling-pr-test-deploy — PR创建与独立测试部署已完成
+- PR #71开放，test.aiaimax.cyou已完成隔离部署、公网HTTPS/真实登录/重启持久性/开发服务未变检查；首次管理员声明由用户本人确认。当前源码交付和对应head远端CI结果由pr-test-deploy-20260928保存，四角色沿用原路径。
+
+### 20260928-scheduling-review-fixes — 已完成（final09）
+- 本轮确认的协议、补偿、并发及故障范围问题已修复；全量unit、六包race、lint/build/embed、29项关键回归及升级回滚全部通过。详细失败历史与后续闭环保留在操作日志及review-fixes-20260928，不再作为未完成任务重复运行。
+
+### 20260928-scheduling-reliability — 代码、PR与隔离测试部署完成
+- 已验收实现经PR #71提交，独立测试环境已上线；原发布源码保持不变，生产部署和真实上游业务调用未执行。当前交接以本文顶部及最终artifact记录为准。
 
 - `20260927-controlled-scheduling-postcommit-review`：先提交实现并完成独立复审，4项P1/2项P2有实证，业务修复尚未执行；完整报告见 post-commit-review-20260927/REVIEW.md。原源码保持，未推送或部署。
 
@@ -1204,3 +1297,84 @@ pnpm --dir frontend run build
 - 六次隔离启动/升级/备份恢复回退通过，302条历史迁移字节不变，新版305条；用户/配置/持久标记保持，临时资源已清理，原有部署未改写。
 - 四角色及逐命令stdout/stderr/退出码、源码三态、补丁重建、回滚哈希固定于/xy2/artifacts/release-0.2.0。原工作树未提交研究、原IQ/调度交付保持，收尾文档独立于发布标签。
 - 原始失败与流程顺序偏差如实保留：独立制品和RC隔离验收在正式标签之后补齐，不回写为发布前已通过。后续严格先完成RC全部门禁再晋级；生产灰度与真实供应商场景仍按既有上线门禁执行。
+
+### 2026-09-28 — 20260928-scheduling-reliability — 可控调度故障闭环候选
+
+- 以发布源码 `4641d3ffabaca3e382ca8523bf9344f2f7ae348a` 为固定基线，在独立工作树完成可靠结算、恢复样本分离、显式故障域与保守错误分类、健康/凭据/模型栅栏、准备超时、profile 修订及管理核实。原发布目录逐文件受保护；未推送、合并或部署。
+- 五个指定 GitHub 仓库及官方资料的实时复核记录在本轮 artifact/references。隔离 PostgreSQL、Redis 和本地 HTTP 测试覆盖终态失败补偿、共享 UNKNOWN 单探测、OAuth 更新后冷却保留、独立与共享账号 429 分流、无实际发送的超时清理以及长流继续读取；原版同输入终态 intent 触发 PG `$2` 类型错误。
+- 构建、golangci-lint 为 0 issues；前端 type/lint/build 及全量 356 文件、2690 用例通过。完整服务/后台 race 未全绿；两项后台 Grok 竞态已在原版只读源码复现，其他跨模块失败保留在完整命令记录中，需独立定位后再作总验。真实供应商联调、生产灰度及在线数据库回滚均未执行。
+- 本次四角色、三态同输入行为、补丁重建、原始源码哈希及隔离资源收尾，见 `/xy2/artifacts/scheduling-optimization-20260928/FINAL_VERIFICATION.json` 和 `VERIFICATION.txt`；原有发布与调度交付角色不覆盖。
+
+
+### 2026-09-28 — 20260928-independent-controlled-audit — 联合门禁后的独立全面审查
+
+- 用户要求新增独立子 Agent 全面审查并行推进；独立 reviewer audit_controlled_final 只读审查后，实际复现模型级配额证据缺失/错误 model 却扩大为整个共享池，以及流式/WS 仅检查 error.code 遗漏 type/cyber_policy。已授权其仅修改 controlled_failure_domains.go、controlled_scheduling_dispatch.go 和两个回归测试；修复与证据位于 review-fixes-20260928/comprehensive-audit/audit_controlled_final，最终联合验证待完成。
+- 原始源码仍保持，final08 快照不可修改；08 后端全量 unit 已实际通过，生产 embed93测试/构建及隔离305→308→恢复305→全新308的启动/登录/静态资源验证通过，但 lint 发现无调用方的旧 collectGeminiSSE 包装器。主执行者删除旧包装器，新的 final09 会先跑 lint 再复用其成功记录执行其他门禁，不能把08旧源通过当作09通过。
+- 07完整race发现 Account 派生缓存字段真实读写竞争；新增32协程并发读取/值复制回归在基线失败、修复通过。主执行者移除模型与请求头的可变惰性缓存，保留既有解析规则；组合getter微基准由约0.30us变为0.72–0.79us、每次1024B分配，选择保持共享账号对象只读，未外推生产吞吐。
+- 错误正文D的断言与持久化结算分开：上游实际取消仍必须D+350ms内发生，后续已存在的五秒结算上下文另行有界检查。隔离10次时间线观测完整保存；没有通过放宽上游截止时间掩盖超时。
+- 四角色路径保持不变，重新封装与全新三态证明需等待当前候选全部门禁完成。此前角色里的BASELINE/旧MODIFIED/ROLLBACK仅作历史证据，不代表新修复已验收。
+
+### 2026-09-28 — 20260928-scheduling-pr-test-deploy — 提交PR与本机独立测试
+
+- 用户明确授权先提交/推送PR，再本机部署test.aiaimax.cyou。已实际提交da829ac、正常push并创建PR #71，随后才启动新compose项目和发布Caddy站点；没有merge或替换开发服务。功能head的18项CI实际SUCCESS，交接文档另行正常提交，不将旧head结果冒称新head检查。
+- 复用验收binary，独立PG/Redis/网络/卷/随机密钥与fresh库；新站公网登录/健康/静态资源、308迁移、注册关闭、重启持久性和15个开发容器不变均有实际证据。新管理员声明423按真实结果保留，不代用户确认，也不把受声明门保护的调度GET称为200。
+- DNS原已正确；Caddy追加独立站点并reload，开发路由与PID保持。代理配置副本回滚恢复baseline原字节，现场测试站保持运行。配置、凭据和运维脚本位于/xy2/deployments/test-aiaimax；秘密未写入Git或PR。
+- 四角色继续沿用原路径；部署前归档保留。最新文档树通过新的pr-test-final-01同输入源码事务，当前归档与原final09被测后端逐文件核对，部署/PR/CI及四角色重开结果见PR_TEST_DEPLOY_RESULT.json。
+
+### 2026-09-29 — group-account-scheduling-rewrite — 分组账号配置存储与接口进行中
+
+- 用户明确废弃原逐模型调度配置并授权重写；本轮已确认每个分组独立设置账号优先级和权重，模型仅作为能力筛选条件；失败时取消本次上游后换账号，首字策略由源码研究和实测决定。
+- 本子任务仅在 rewrite-20260929/work 候选新增分组策略存储、追加迁移、管理员接口及对应测试；原发布源码、前轮实现工作树和既有迁移不改。保存键仅为 group_id，不从旧逐模型表任取策略。
+- 当前阶段先实现显式账号规则、分组成员校验、版本 CAS 与旧模型配置只读迁移提示；临时超时默认值待联合方案核对，不将历史本地测试当作新实现验收。无生产或真实供应商调用。
+
+
+## 2026-09-29 分组调度重写：最新重试决定与交付准备
+
+- 最新用户明确改为同一优先级合格账号全部尝试后再降级；总次数默认3、总等待默认240秒、单次首有效输出默认120秒、同账号最多一次。撤销中途提出的同层最多2限制，不在统一预算外叠加旧10:1重试额度或超时后仅再试1次。
+- 仅候选 rewrite-20260929/work 被修改；分组配置独立保存，group0 standard未分组/simple全部账号。migration262与管理接口及race测试已通过；服务Explain/跨模型组级配置定向无网络测试已通过。真实PG/Redis全服务集成由根代理统一收口，不能据此宣称全部验收完成。
+- finalize_rewrite.py已准备分阶段打包/同输入探针/恢复验证流程。此记录写入时未执行新三态事务、未替换固定四角色、未运行真实上游或部署；旧SQL三态证据仅证明原终态SQL修复。
+
+
+## 2026-09-29 分组账号调度重写：统一验证前交接摘要
+
+- 唯一修改候选为 /xy2/artifacts/scheduling-optimization-20260928/rewrite-20260929/work，分支 refactor/group-account-scheduling-20260929，起点89683d2e。原 /xy2/artifacts/scheduling-optimization-20260928/work 与原发布源码未由本轮子任务修改；不得把旧按模型方案重新当作当前配置来源。
+- 配置仅按分组保存账号priority/traffic_weight，数字越小优先；同一组全部模型共用，模型仅决定候选能力与必要故障范围。新成员以现有accounts.priority和weight1自动出现，旧逐模型表只留审计，冲突以结构化migration_warnings提示，不自动任取旧模型规则导入。
+- migration262新增scheduling_group_policies；管理员GET/PUT /admin/scheduling/groups/:id使用expected_version CAS，验证账号属于当前组；旧policies写读删除入口退役410。group0在standard严格限未分组账号、simple取全部账号，通过同一store不可变构造范围共享给管理/Explain/服务，不代表跨组全局继承。
+- 最终用户决定为同级尚未尝试的合格账号用尽后降级；统一实际尝试默认3、首有效输出默认120000ms、总等待默认240000ms，每组可调，同账号最多一次。撤销中途提出的同级最多2；不保留旧10:1重试令牌、超时后最多再1次或隐性预留窗口。取消当前尝试后再换号，已提交有效内容/强所有者状态不能透明换号拼接。
+- 服务测试迁移保留实质约束：WS同一turn复用Ledger与超时历史、下一turn重置预算而保留会话；所有者测试使用真实新组策略，不伪造Enabled=false旧开关，保留暂停/家庭暂停/session drain/硬健康/剥离previous_response_id后禁止换账号等断言；后续重试测试推进真实Ledger后验证同级第三次、总次数耗尽及选择本身不消费实际次数，ReserveFallback=false不再误当失败。
+- 阶段性已观察：分组store/管理handler/迁移checksum定向及race通过，早期Explain/LoadGroupPolicy/AccountPool无网络定向通过。最新三测试文件已gofmt且diff --check通过；其单独无网络编译遇并行写入期间FailureEvidence.AttemptTimeout字段未就绪，失败日志完整保留，根代理随后确认字段已补齐。本摘要不把该失败说成通过，也不重新单独跑同一组测试。
+- 当前统一实际验证为根代理root-focused-real-04，包含WS和全部Controlled/AccountPool；结果待根代理收取和确认。PG/Redis仅根代理串行使用专用夹具；本子任务没有并发运行共享Redis集成。暂停前强owner冻结等回归仍由该统一验证约束，不删断言迎合实现。
+- finalize_rewrite.py已完成prepare，并对候选及原基线使用完全相同overlay输入、只读源挂载和network none预检：两边均编译且测试实际运行；候选group API为200/200/409、旧策略410，同级序列[1,2,3,4]（夹具显式总次数4）；原基线group API404、旧策略400，旧同级预算在[1,2]后耗尽，exit1不是缺类型构建失败。这仅是SQL-mock handler/loadPolicy/evaluator/ledger预检，不能替代实际数据库、真实上游、部署或最终三态。
+- 截至本摘要：stage/verify/publish均未运行，固定MODIFIED_FILE.tar/DIFF_FILE.patch/ROLLBACK.sh未替换；VERIFICATION.txt保留根代理实际执行追加。脚本将从原BASELINE.tar重建完整patch，并验证BASELINE/MODIFIED/ROLLBACK、原字节和执行位恢复及全部四角色重开哈希。旧SQL三态仅证明原终态SQL修复，不能当本轮调度重写验收。
+- 前端已由其负责人冻结；本摘要写完后本子任务暂停源码编辑，等待根代理统一验证通过及最终freeze通知再打包。没有生产部署、没有真实供应商调用，不承诺零潜在问题。
+
+
+### 2026-09-29 — group-account-scheduling-rewrite — 冻结本地重写源码
+
+- 已完成分组账号优先级/权重内核、统一请求预算、实际模型重新准入、故障避让与全新管理配置；最新用户规则为同级合格账号耗尽后降级，不保留同级最多2个的中间决定。发布迁移262和旧策略接口410；模型能力筛选不变成逐模型设置。
+- 最终业务包全回归通过，原只读schema夹具失败经可写副本复测通过；真实PG/Redis关键race、生产embed构建、前端全量与最终增量、真实浏览器检查通过。静态检查的早期测试断言/格式问题及修正记录保留，最终结果由固定交付清单索引，不能只看0 issues文字而忽略退出码。
+- 真实隔离新装309、旧版308、升级309、恢复数据库及应用快照回退308的health/login全部200；真实认证分组GET/PUT/CAS持久化通过，三类存储标记保持。该演练使用空账号组0及合成管理员，非空账号路由由单独的PG/Redis/本地HTTP测试覆盖，两者均非真实供应商调用。
+- 冻结后仅在源码树之外写入事务证明与交付状态；源码三态、差分重建、原字节与执行位恢复和四角色重开由rewrite-final-01记录。原发布、原工作树和旧测试站保持；不推送、不合并、不部署，不将离线ROLLBACK.sh误用于在线数据库降级。
+
+### 2026-09-29 — dual-scheduling-rewrite — 冻结候选源码
+
+- 完成双模式隔离、分组级可控选择、批量预检、有界未知恢复、代次围栏与管理界面。模式/PG/Redis/协议/浏览器/真实镜像升级回退的执行记录保留在dual-mode-20260929；本次没有部署、推送或真实付费调用。
+- 全量命令和补充整包重跑按各自实际退出码保留，最终组合验收不抹去失败记录。此记录之后的累计源码三态、差分重建、四角色重开与清理结果写入外部交付状态，不再改已冻结源码。
+
+### 2026-09-29 — 一键账号调度简化、缓存并发修复与交付冻结
+
+- 目标：按用户10项要求恢复单账号快速开关，删除多余调度控制与诊断界面，保留两种调度模式及分组账号级优先级/权重。
+- 执行：从冻结dual-mode候选复制为独立one-click工作树；后端、前端、固定new-api源码审查并行。完成通用开关持久化、入参严格校验、旧控制退役、账号局部故障/新准入、在途SSE/WS保护、迁移265，删除多余前端组件/API/文案并保留原版界面。复审发现成员缓存遗漏及共享metadata旧写反盖，新桶失效/CAS/v2缓存和数据库单调迁移266修复；普通编辑保留锁后开关。
+- 验证：前端2692测试和60浏览器断言，真实PG/Redis一键race38项及全量lint通过；保留每个初次失败、修正和复跑的命令及输出。全量后端、广泛race、静态镜像、新装升级回滚和累计三态源码事务由本轮外部证据控制器完成，终态和哈希统一见FINAL_DELIVERY.json；不得拿未完进程当通过。
+- 交接：实现源码已冻结，只有后续实际门禁发现问题才继续改代码。四角色沿用既定绝对路径；原4549文件基线保持，未推送/部署，未调用真实供应商。下次操作复用本轮STATE.json和已完成记录，禁止重跑已结束身份或误修改旧候选。
+
+### 2026-09-29 — 20260929-release-0.2.1 — 启动发布
+
+- 已读取完整仓库记忆，实查 main=4641d3ff、PR #71 head=89683d2e，v0.2.1 尚不存在。使用独立发布副本保留原源码，用户已授权推送和发版。
+- 复用已验收一键账号调度与测试站证据；后续版本与来源审计、远端同 head 检查和附件/镜像验证以本次执行记录为准。
+
+### 2026-09-29 — 20260929-release-0.2.1 — 提交前核对
+
+- 4547 个已验收源码文件完整复制到 release/0.2.1；仅 VERSION、provenance 产品版本与本轮记忆不同于冻结实现；历史兼容0.2.8和305条正式0.2.0旧SQL不改。
+- 独立 release_021_review 确认沿用既有完整 GoReleaser 工作流；release_021_transaction 负责同一四角色三态与回退；release_021_artifacts 负责正式附件SHA、GHCR双架构、305→313→305及新装313隔离验收。子任务只在外部证据目录写入，不更改发布业务代码或在线测试站。
+- 本轮工具14测试和diff检查通过。首次来源审计因待提交工作树非干净而明确exit1；提交后在干净树重跑，不绕过审计。最终远端状态、标签及工作流结果保存在本轮STATE与最终报告，不能把已验收旧head检查冒称本轮CI。

@@ -35,6 +35,7 @@ func TestBuildRedisOptions(t *testing.T) {
 	require.Equal(t, 100, opts.PoolSize)
 	require.Equal(t, 10, opts.MinIdleConns)
 	require.Nil(t, opts.TLSConfig)
+	require.True(t, opts.ContextTimeoutEnabled)
 
 	// Test case with TLS enabled
 	cfgTLS := &config.Config{
@@ -45,5 +46,6 @@ func TestBuildRedisOptions(t *testing.T) {
 	}
 	optsTLS := buildRedisOptions(cfgTLS)
 	require.NotNil(t, optsTLS.TLSConfig)
+	require.True(t, optsTLS.ContextTimeoutEnabled)
 	require.Equal(t, "localhost", optsTLS.TLSConfig.ServerName)
 }

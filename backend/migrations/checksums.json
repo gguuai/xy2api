@@ -307,6 +307,14 @@
     "255_affiliate_ledger_operation_id.sql": "3823bfea5f64feb58f5fcebc341c6877eaefc97834b4cd652c8e83ad08ed78da",
     "256_iq_current_health.sql": "cae5a91d5bdb956aec8467da333206bb7b95738b8e0a3f7008addf14916cc840",
     "257_explicit_account_scheduling.sql": "94490e12af9e0321305c1442c66312ce31b7b94b1e71846eaf0c9326f0310f5e",
-    "258_scheduling_terminal_intent_index.sql": "7a6e5eaf0578898f5f398fb42e567335a422ba0f82b1f2daf19a2d06d66951b4"
+    "258_scheduling_terminal_intent_index.sql": "7a6e5eaf0578898f5f398fb42e567335a422ba0f82b1f2daf19a2d06d66951b4",
+    "260_scheduling_profile_health_revision.sql": "7126a209284df6bf5944e1bd858beb8d6c000354f843640dd1402dbe70a75925",
+    "259_scheduling_failure_domains.sql": "55141b5d99d9fa8cca77dc73b491a0971fd04c79f8494304ed5c943eeffd1c61",
+    "261_scheduling_failure_feedback_queue.sql": "467fb53648080450ff4bf37b0724cba7f6e64e9e6d83cfe2977536297a2a2a28",
+    "262_group_account_scheduling.sql": "eb504730079f0a432a1a6d4017d68cab57bf7cb3bccd217116daba65fa67aeb2",
+    "264_scheduling_bounded_unknown_recovery.sql": "a581fded50d3c1ee5dcad7b9618a30dbb3b06fa1a913d7cc5efb8b7b4fca9d1d",
+    "263_dual_scheduling_mode.sql": "ecb348c8069a09d7341f74a521adfa423035ef838326ce334fd5b29f072cd6f2",
+    "265_single_account_scheduling_switch.sql": "cee85a299f8a623ec96cdb85871c9bfbc67c7f120fcc57adb0d1167173ab247c",
+    "266_account_monotonic_updated_at.sql": "9a4dcdaa665e20f9aa5b6c6957794ea69abdafb2c490184a176e956b8fa01935"
   }
 }

@@ -65,42 +65,15 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 	if input.GroupID < 0 || input.Model == "" || input.PinAccountID < 0 || (input.ContextTokens != nil && *input.ContextTokens < 0) {
 		return nil, scheduling.ErrInvalidControl
 	}
-	rec, err := s.Store.GetPolicy(ctx, input.GroupID, input.Model)
+	rec, err := s.Store.GetGroupPolicy(ctx, input.GroupID)
 	if err != nil {
 		return nil, err
 	}
-	var defaults *scheduling.Policy
-	if input.GroupID != 0 {
-		global, e := s.Store.GetPolicy(ctx, 0, input.Model)
-		if e != nil {
-			return nil, e
-		}
-		defaults = global.Policy
-	}
-	p := scheduling.Policy{GroupID: input.GroupID, Model: input.Model}
-	policySource := "legacy"
-	if rec.Policy != nil {
-		p = *rec.Policy
-		policySource = "scope"
-	} else if defaults != nil {
-		p = *defaults
-		p.GroupID = input.GroupID
-		policySource = "global"
-	}
-	p = scheduling.NormalizePolicy(p)
+	p, profile := accountPoolPolicy(rec.Policy, input.Model)
+	policySource, profileSource := "group_accounts", "group_wait_budget"
 	tokens := int64(-1)
 	if input.ContextTokens != nil {
 		tokens = *input.ContextTokens
-	}
-	profile, ok := scheduling.ResolveProfileForTransport(p, input.Reasoning, tokens, input.Protocol)
-	profileSource := policySource
-	if !ok && defaults != nil {
-		profile, ok = scheduling.ResolveProfileForTransport(*defaults, input.Reasoning, tokens, input.Protocol)
-		profileSource = "global"
-	}
-	if !ok {
-		profile = scheduling.LatencyProfile{Name: "unconfigured"}
-		profileSource = "observation_only"
 	}
 	if input.PinAccountID > 0 {
 		p.Mode = scheduling.ModePin
@@ -115,6 +88,22 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Group zero has deployment-specific membership: ungrouped in standard
+	// mode, all accounts in simple mode. The same store that serves the editor
+	// is authoritative, so preview cannot expose another group's candidates.
+	if input.GroupID == 0 {
+		members := make(map[int64]bool, len(rec.Policy.Accounts))
+		for _, rule := range rec.Policy.Accounts {
+			members[rule.AccountID] = true
+		}
+		filtered := make([]Account, 0, len(accounts))
+		for _, a := range accounts {
+			if members[a.ID] {
+				filtered = append(filtered, a)
+			}
+		}
+		accounts = filtered
 	}
 	facts := map[int64]SchedulingExplainEligibility{}
 	for _, provider := range []SchedulingExplainEligibilityFunc{s.explainOpenAI, s.explainGateway} {
@@ -179,6 +168,18 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			eligible = false
 			reason = "weight_zero"
 		}
+		var failureDomains []string
+		if eligible && p.Enabled {
+			allowed, domains, failureErr := s.controlledFailureCandidate(ctx, &a, input.Model)
+			if failureErr != nil {
+				return nil, failureErr
+			}
+			failureDomains = domains
+			if !allowed {
+				eligible = false
+				reason = "failure_domain_gate"
+			}
+		}
 		used := counts[a.ID]
 		if info := load[a.ID]; info != nil {
 			if info.CurrentConcurrency > used {
@@ -188,10 +189,14 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			return nil, scheduling.ErrSharedState
 		}
 		capacity := a.Concurrency <= 0 || used < a.Concurrency
-		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: eligible, CapacityAvailable: capacity})
+		healthIdentity, healthErr := s.controlledHealthIdentity(ctx, &a)
+		if healthErr != nil {
+			return nil, healthErr
+		}
+		req.Candidates = append(req.Candidates, scheduling.Candidate{AccountID: a.ID, Priority: a.Priority, HardEligible: eligible, CapacityAvailable: capacity, FailureDomains: failureDomains, HealthIdentity: healthIdentity, HealthModel: a.GetMappedModel(input.Model)})
 		rows = append(rows, schedulingExplainRow{ID: a.ID, Name: a.Name, Priority: priority, Weight: weight, Eligible: eligible, Reason: reason, Control: state.State, FamilyControl: family.State, CurrentConcurrency: used, ConcurrencyLimit: a.Concurrency, CapacityAvailable: capacity})
 	}
-	mode, reason := "legacy", "legacy_mode_observation"
+	mode, reason := "account_weights", "group_account_selection"
 	var selected *int64
 	snapshot, e := s.Runtime.InspectSelection(ctx, req)
 	if e != nil && !errors.Is(e, scheduling.ErrNoCandidate) && !errors.Is(e, scheduling.ErrCapacity) {
@@ -202,7 +207,7 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 		options[d.AccountID] = d
 	}
 	if p.Enabled {
-		mode = p.Mode
+		mode = "account_weights"
 		reason = "snapshot_selection"
 		if e != nil {
 			reason = e.Error()
@@ -243,5 +248,10 @@ func (s *ControlledSchedulingService) Explain(ctx context.Context, raw json.RawM
 			row.Reason = "health_cooldown"
 		}
 	}
-	return map[string]any{"policy_version": p.Version, "policy_source": policySource, "mode": mode, "reason": reason, "profile": profile, "profile_source": profileSource, "context_bucket": req.ContextBucket, "protocol": input.Protocol, "candidates": rows, "readonly": true, "selected_account_id": selected, "snapshot_at": snapshot.SnapshotAt, "scope": "ordinary_first_request_group_defaults", "scope_notes": []string{"No reservation is made; final dispatch rechecks control and capacity.", "Owner/session continuation, API-key authorization and user billing overrides require the real request context."}}, nil
+	return map[string]any{"policy_version": p.Version, "policy_source": policySource, "mode": mode, "reason": reason, "profile": profile, "profile_source": profileSource, "context_bucket": req.ContextBucket, "context_tokens_known": input.ContextTokens != nil, "context_source": func() string {
+		if input.ContextTokens != nil {
+			return "explain_input"
+		}
+		return "unknown"
+	}(), "reasoning_effort": input.Reasoning, "profile_diagnostics": []scheduling.ProfileDiagnostic{}, "protocol": input.Protocol, "candidates": rows, "readonly": true, "selected_account_id": selected, "snapshot_at": snapshot.SnapshotAt, "scope": "ordinary_first_request_group_defaults", "scope_notes": []string{"No reservation is made; final dispatch rechecks control and capacity.", "Owner/session continuation, API-key authorization and user billing overrides require the real request context.", "Production context tokens are unknown. No byte/token estimate is used. Explain context_tokens is a hypothetical input, not a production observation."}}, nil
 }

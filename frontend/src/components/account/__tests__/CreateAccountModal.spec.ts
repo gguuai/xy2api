@@ -1,3 +1,4 @@
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -194,6 +195,17 @@ async function openCodexImportStep(toggleClicks = 0) {
 }
 
 describe('CreateAccountModal OpenAI long-context billing', () => {
+  it.each(['controlled', 'sub2api'] as const)('keeps account editing free of scheduling scope and failure-domain settings in %s mode', async mode => {
+    useSchedulingModeStore().document = { mode, version: 1 }
+    const wrapper = mountModal()
+    await flushPromises()
+    expect(wrapper.text()).not.toMatch(/failureDomains|controlTitle|credentialFamily|diagnosticsTitle/)
+    expect(wrapper.find('[data-testid="quota-pool-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="availability-pool-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="control-scope"]').exists()).toBe(false)
+    expect(wrapper.find('account-failure-domains-stub').exists()).toBe(false)
+    wrapper.unmount()
+  })
   beforeEach(() => {
     authIsSimpleMode.value = true
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })

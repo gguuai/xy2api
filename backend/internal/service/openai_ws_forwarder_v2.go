@@ -348,6 +348,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, promptErr
 	}
 	controlledTerminal := false
+	controlledPreparationFinished := false
 	controlledDispatch, controlledErr := s.controlledScheduling.beginDispatch(ctx, account.ID, account.Concurrency)
 	if controlledErr != nil {
 		return nil, controlledErr
@@ -355,7 +356,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if controlledDispatch != nil {
 		ctx = controlledDispatch.Context()
 		defer func() {
-			controlledDispatch.Finish("websocket_turn", controlledTerminal, forwardErr)
+			if !controlledPreparationFinished {
+				controlledDispatch.Finish("websocket_turn", controlledTerminal, forwardErr)
+			}
 			if forwardResult != nil {
 				forwardResult.SchedulingAttemptID = SchedulingAttemptIDFromContext(ctx)
 			}
@@ -376,6 +379,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	if err := controlledDispatch.MarkSent(); err != nil {
+		controlledPreparationFinished = true
+		controlledDispatch.finishPreparationFailure(err)
 		return nil, err
 	}
 	if err := lease.WriteJSONWithContextTimeout(ctx, wirePayload, s.openAIWSWriteTimeout()); err != nil {

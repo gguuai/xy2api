@@ -206,7 +206,7 @@ func qualityDigest(value string) string {
 }
 
 func qualityRequest(ctx context.Context) *openAIQualityRequest {
-	if ctx == nil {
+	if ctx == nil || Sub2APISchedulingEnabled(ctx) {
 		return nil
 	}
 	q, _ := ctx.Value(openAIQualityContextKey{}).(*openAIQualityRequest)
@@ -320,7 +320,7 @@ func rememberOpenAIQualityWSTurn(ctx context.Context, body []byte, response stri
 // AttachOpenAIQualityRouting is called after the final local session identity
 // is resolved. It never changes that identity or the incoming request bytes.
 func (s *OpenAIGatewayService) AttachOpenAIQualityRouting(c *gin.Context, session string, body []byte) {
-	if s == nil || c == nil || c.Request == nil || session == "" || s.qualityConfig().EffectiveMode() == "off" || isGrokRequestContext(c) {
+	if s == nil || c == nil || c.Request == nil || session == "" || s.qualityConfig().EffectiveMode() == "off" || Sub2APISchedulingEnabled(c.Request.Context()) || isGrokRequestContext(c) {
 		return
 	}
 	apiID := getAPIKeyIDFromContext(c)

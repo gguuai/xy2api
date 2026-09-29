@@ -31,7 +31,7 @@ var supportedGrokVoiceHTTPEndpoints = map[string]struct{}{
 // the custom-voices CRUD/audio subresources).
 // The response is intentionally passed through because TTS returns audio bytes
 // while STT returns JSON and xAI may add format-specific headers.
-func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Context, account *Account, endpoint string, body []byte, contentType string) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Context, account *Account, endpoint string, body []byte, contentType string) (_ *OpenAIForwardResult, retErr error) {
 	if s == nil || account == nil {
 		return nil, fmt.Errorf("grok voice service/account is required")
 	}
@@ -99,11 +99,15 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	if resp.StatusCode >= 400 {
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, resp.Header.Get("x-request-id"), endpoint)
 	}
 	data, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateControlledNonstreamResponse(resp, data, "grok_voice"); err != nil {
 		return nil, err
 	}
 	writeGrokMediaResponse(c, resp, data, s.responseHeaderFilter)

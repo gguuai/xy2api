@@ -57,13 +57,23 @@ func RegisterAdminRoutes(
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
 		if h.Admin.Scheduling != nil {
-			admin.GET("/scheduling/policies", h.Admin.Scheduling.GetPolicy)
-			admin.PUT("/scheduling/policies", h.Admin.Scheduling.PutPolicy)
-			admin.POST("/scheduling/explain", h.Admin.Scheduling.Explain)
-			admin.GET("/scheduling/requests/:request_id/attempts", h.Admin.Scheduling.ListRequestAttempts)
-			admin.GET("/scheduling/stats", h.Admin.Scheduling.GetStatistics)
-			admin.GET("/accounts/:id/scheduling-control", h.Admin.Scheduling.GetControl)
-			admin.POST("/accounts/:id/scheduling-control", h.Admin.Scheduling.Control)
+			admin.GET("/scheduling/mode", h.Admin.Scheduling.GetSchedulingMode)
+			admin.PUT("/scheduling/mode", h.Admin.Scheduling.PutSchedulingMode)
+			admin.GET("/scheduling/groups/:id", h.Admin.Scheduling.GetGroupPolicy)
+			admin.PUT("/scheduling/groups/:id", h.Admin.Scheduling.PutGroupPolicy)
+			admin.GET("/scheduling/policies", h.Admin.Scheduling.RetiredModelPolicy)
+			admin.PUT("/scheduling/policies", h.Admin.Scheduling.RetiredModelPolicy)
+			admin.DELETE("/scheduling/policies", h.Admin.Scheduling.RetiredModelPolicy)
+			admin.POST("/scheduling/explain", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.GET("/scheduling/requests/:request_id/attempts", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.GET("/scheduling/stats", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.GET("/accounts/:id/scheduling-control", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.POST("/accounts/:id/scheduling-control", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.GET("/accounts/:id/failure-domains", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.PUT("/accounts/:id/failure-domains", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.POST("/accounts/:id/failure-domains/recovery", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.GET("/scheduling/attempts/:ticket_id/resolution", h.Admin.Scheduling.RetiredAccountScheduling)
+			admin.POST("/scheduling/attempts/:ticket_id/resolution", h.Admin.Scheduling.RetiredAccountScheduling)
 		}
 
 		// 公告管理

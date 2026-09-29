@@ -1311,7 +1311,7 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 // DoGrokNativeResponsesJSON POSTs a non-streaming Responses body to the account's
 // Grok upstream and returns the raw JSON body. Used by /v1/web_search.
 // Gin-free: UA is always the pinned Grok CLI identity (resolveGrokUpstreamUserAgent ignores inbound).
-func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account *Account, body []byte) ([]byte, error) {
+func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account *Account, body []byte) (_ []byte, retErr error) {
 	if s == nil || s.httpUpstream == nil {
 		return nil, errors.New("http upstream not configured")
 	}
@@ -1359,6 +1359,7 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, Reason: GatewayFailureReason("grok_search_transport")}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	respBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if readErr != nil {
 		return nil, &UpstreamFailoverError{
@@ -1375,6 +1376,9 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBytes}
 		}
 		return nil, fmt.Errorf("grok upstream %d: %s", resp.StatusCode, msg)
+	}
+	if err := validateControlledNonstreamResponse(resp, respBytes, "responses"); err != nil {
+		return nil, err
 	}
 	return respBytes, nil
 }

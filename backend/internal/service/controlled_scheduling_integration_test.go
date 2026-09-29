@@ -29,8 +29,9 @@ import (
 // account credential or production datastore is used.
 type controlledIntegrationRepo struct {
 	AccountRepository
-	db       *sql.DB
-	accounts []*Account
+	db            *sql.DB
+	accounts      []*Account
+	shortTimeouts bool
 }
 
 func (r *controlledIntegrationRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -76,27 +77,31 @@ func controlledIntegration(t *testing.T, profile bool) (*ControlledSchedulingSer
 	require.NoError(t, e)
 	db.SetMaxOpenConns(12)
 	t.Cleanup(func() { db.Close(); _, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE"); admin.Close() })
-	_, e = db.Exec("CREATE TABLE scheduler_outbox(id BIGSERIAL PRIMARY KEY,event_type TEXT NOT NULL,account_id BIGINT); CREATE TABLE accounts(id BIGINT PRIMARY KEY,parent_account_id BIGINT REFERENCES accounts(id),schedulable BOOLEAN NOT NULL DEFAULT TRUE,status TEXT NOT NULL DEFAULT 'active',deleted_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); INSERT INTO accounts(id) VALUES(1),(3); INSERT INTO accounts(id,parent_account_id) VALUES(2,1)")
+	_, e = db.Exec("CREATE TABLE scheduler_outbox(id BIGSERIAL PRIMARY KEY,event_type TEXT NOT NULL,account_id BIGINT); CREATE TABLE accounts(id BIGINT PRIMARY KEY,parent_account_id BIGINT REFERENCES accounts(id),credentials JSONB NOT NULL DEFAULT '{}'::jsonb,extra JSONB NOT NULL DEFAULT '{}'::jsonb,priority INTEGER NOT NULL DEFAULT 0,platform TEXT NOT NULL DEFAULT 'openai',type TEXT NOT NULL DEFAULT 'oauth',schedulable BOOLEAN NOT NULL DEFAULT TRUE,status TEXT NOT NULL DEFAULT 'active',deleted_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); INSERT INTO accounts(id) VALUES(1),(3); INSERT INTO accounts(id,parent_account_id) VALUES(2,1); UPDATE accounts SET priority=1 WHERE id=3; CREATE TABLE groups(id BIGINT PRIMARY KEY,deleted_at TIMESTAMPTZ); INSERT INTO groups(id) VALUES(7); CREATE TABLE account_groups(account_id BIGINT REFERENCES accounts(id),group_id BIGINT REFERENCES groups(id),priority INTEGER NOT NULL DEFAULT 50,PRIMARY KEY(account_id,group_id)); INSERT INTO account_groups(account_id,group_id) VALUES(1,7),(2,7),(3,7)")
 	require.NoError(t, e)
 	migration, e := os.ReadFile("../../migrations/257_explicit_account_scheduling.sql")
 	require.NoError(t, e)
 	_, e = db.Exec(string(migration))
 	require.NoError(t, e)
+	for _, name := range []string{"259_scheduling_failure_domains.sql", "260_scheduling_profile_health_revision.sql", "261_scheduling_failure_feedback_queue.sql", "262_group_account_scheduling.sql", "263_dual_scheduling_mode.sql", "264_scheduling_bounded_unknown_recovery.sql"} {
+		migration, e = os.ReadFile("../../migrations/" + name)
+		require.NoError(t, e)
+		_, e = db.Exec(string(migration))
+		require.NoError(t, e)
+	}
 	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: 15})
 	require.NoError(t, rdb.FlushDB(context.Background()).Err())
 	t.Cleanup(func() { rdb.Close() })
 	family := int64(1)
-	accounts := []*Account{{ID: 1, Priority: 0, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}, {ID: 2, ParentAccountID: &family, Priority: 0, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}, {ID: 3, Priority: 1, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}}
-	repo := &controlledIntegrationRepo{db: db, accounts: accounts}
+	accounts := []*Account{{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Priority: 0, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}, {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &family, Priority: 0, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}, {ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Priority: 1, Concurrency: 10, Status: StatusActive, Schedulable: true, GroupIDs: []int64{7}}}
+	repo := &controlledIntegrationRepo{db: db, accounts: accounts, shortTimeouts: profile}
 	service := NewControlledSchedulingService(db, rdb, repo, nil)
-	p := scheduling.NormalizePolicy(scheduling.Policy{GroupID: 7, Model: "test-model", Enabled: true, Accounts: []scheduling.AccountRule{{AccountID: 1, Weight: 7}, {AccountID: 2, Weight: 3}, {AccountID: 3, Weight: 1}}})
-	p.Retry.SwitchMarginMS = 5
-	if profile {
-		p.Profiles = []scheduling.LatencyProfile{{Name: "test", HealthThresholdMS: 50, RecoveryThresholdMS: 30, AttemptTimeoutMS: 150, TotalBudgetMS: 1000, MinAttemptWindowMS: 50}}
-	}
-	rec, e := service.Store.PutPolicy(context.Background(), p, 0)
+	group := scheduling.DefaultGroupPolicy(7)
+	zero, one := 0, 1
+	group.Accounts = []scheduling.AccountRule{{AccountID: 1, Priority: &zero, Weight: 7}, {AccountID: 2, Priority: &zero, Weight: 3}, {AccountID: 3, Priority: &one, Weight: 1}}
+	rec, e := service.Store.PutGroupPolicy(context.Background(), group, 0)
 	require.NoError(t, e)
-	p = *rec.Policy
+	p, _ := accountPoolPolicy(rec.Policy, "test-model")
 	return service, db, p, accounts
 }
 func controlledIntegrationRequest(t *testing.T, s *ControlledSchedulingService) (context.Context, *ControlledRequest) {
@@ -106,6 +111,12 @@ func controlledIntegrationRequest(t *testing.T, s *ControlledSchedulingService) 
 	r, on, e := s.loadPolicy(ctx, &group, "test-model", "")
 	require.NoError(t, e)
 	require.True(t, on)
+	// Fast transport tests override only this in-memory request ledger. Persisted
+	// group settings retain production defaults and never contain latency profiles.
+	if repo, ok := s.accounts.(*controlledIntegrationRepo); ok && repo.shortTimeouts {
+		r.Profile = scheduling.LatencyProfile{Name: scheduling.AccountPoolProfileName, AttemptTimeoutMS: 150, TotalBudgetMS: 1000, MinAttemptWindowMS: 50}
+		r.Ledger = scheduling.NewAttemptLedger(r.Policy.Retry, r.Profile, r.Started, r.ClientDeadline)
+	}
 	t.Cleanup(r.Close)
 	return ctx, r
 }
@@ -176,10 +187,10 @@ func TestControlledRealStoresAndHTTP(t *testing.T) {
 		require.Error(t, e)
 	})
 	t.Run("pause_wins_before_gate_no_call_or_budget", func(t *testing.T) {
-		s, _, _, accounts := controlledIntegration(t, false)
+		s, db, _, accounts := controlledIntegration(t, false)
 		ctx, r := controlledIntegrationRequest(t, s)
 		a := controlledPick(t, s, ctx, r, accounts)
-		_, e := s.Store.Control(ctx, scheduling.ControlCommand{AccountID: a.ID, Action: "pause"})
+		_, e := db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=$1", a.ID)
 		require.NoError(t, e)
 		req, _ := http.NewRequestWithContext(ctx, "POST", "http://unused", nil)
 		calls := 0
@@ -197,9 +208,8 @@ func TestControlledRealStoresAndHTTP(t *testing.T) {
 		d, e := s.beginDispatch(ctx, a.ID, 10)
 		require.NoError(t, e)
 		require.NoError(t, d.MarkSent())
-		control, e := s.Store.Control(ctx, scheduling.ControlCommand{AccountID: a.ID, Action: "pause"})
+		_, e = db.ExecContext(ctx, "UPDATE accounts SET schedulable=FALSE WHERE id=$1", a.ID)
 		require.NoError(t, e)
-		require.Equal(t, scheduling.ControlDraining, control.State)
 		require.NoError(t, d.Context().Err())
 		d.ObserveFrame([]byte("{\"type\":\"response.completed\"}"))
 		d.Finish("completed", true, nil)
@@ -250,9 +260,16 @@ func TestControlledRealStoresAndHTTP(t *testing.T) {
 		resp, e := controlledHTTP(t, s, ctx, a2.ID, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
 		require.NoError(t, e)
 		controlledConsume(t, resp)
-		_, e = s.selectAccount(ctx, r, accounts, func(*Account) (bool, string) { return true, "" }, nil, false)
-		require.Error(t, e)
-		require.Equal(t, 2, r.Ledger.Snapshot().Attempts)
+		a3 := controlledPick(t, s, ctx, r, accounts)
+		require.NotEqual(t, a.ID, a3.ID)
+		require.NotEqual(t, a2.ID, a3.ID)
+		resp, e = controlledHTTP(t, s, ctx, a3.ID, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, "{\"ok\":true}")
+		})
+		require.NoError(t, e)
+		controlledConsume(t, resp)
+		require.Equal(t, 3, r.Ledger.Snapshot().Attempts)
 	})
 	t.Run("semantic_reasoning_stops_first_output_timer", func(t *testing.T) {
 		s, _, _, accounts := controlledIntegration(t, true)
@@ -311,17 +328,101 @@ func TestControlledRealStoresAndHTTP(t *testing.T) {
 		require.NoError(t, db.QueryRow("SELECT state FROM scheduling_attempts WHERE request_id=$1", r.ID).Scan(&state))
 		require.Equal(t, "unknown", state)
 	})
-	t.Run("429_skips_shared_credential_family", func(t *testing.T) {
-		s, _, _, accounts := controlledIntegration(t, false)
+
+	t.Run("unknown_429_keeps_shadow_and_same_site_models_independent", func(t *testing.T) {
+		s, db, _, accounts := controlledIntegration(t, false)
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(429)
+			_, _ = fmt.Fprint(w, `{"error":{"type":"rate_limit_error"}}`)
+		}))
+		defer server.Close()
+		// All accounts target the identical site. Accounts 1 and 2 additionally share
+		// actual credentials through the proven shadow relation; neither proves quota.
+		for _, a := range accounts {
+			a.Credentials = map[string]any{"base_url": server.URL}
+		}
+		_, e := db.Exec("UPDATE accounts SET credentials=jsonb_build_object('base_url',$1::text)", server.URL)
+		require.NoError(t, e)
 		ctx, r := controlledIntegrationRequest(t, s)
+		for _, expected := range []int64{1, 2, 3} {
+			a := controlledPick(t, s, ctx, r, accounts)
+			require.Equal(t, expected, a.ID)
+			req, e := http.NewRequestWithContext(ctx, "POST", server.URL, strings.NewReader(`{"model":"test-model","stream":true}`))
+			require.NoError(t, e)
+			resp, e := s.roundTrip(req, a.ID, 10, server.Client().Do)
+			require.NoError(t, e)
+			controlledConsume(t, resp)
+			require.False(t, r.Ledger.Snapshot().BlockedFailureDomains["1"])
+			if expected == 1 {
+				local, e := s.Store.InspectFailureDomains(ctx, 1, "test-model")
+				require.NoError(t, e)
+				require.False(t, local.Eligible)
+				otherModel, e := s.Store.InspectFailureDomains(ctx, 1, "other-model")
+				require.NoError(t, e)
+				require.True(t, otherModel.Eligible)
+				shadow, e := s.Store.InspectFailureDomains(ctx, 2, "test-model")
+				require.NoError(t, e)
+				require.True(t, shadow.Eligible)
+				sameSite, e := s.Store.InspectFailureDomains(ctx, 3, "test-model")
+				require.NoError(t, e)
+				require.True(t, sameSite.Eligible)
+			}
+		}
+		_, e = s.selectAccount(ctx, r, accounts, func(*Account) (bool, string) { return true, "test" }, nil, false)
+		require.Error(t, e)
+		require.EqualValues(t, 3, calls.Load())
+		require.Equal(t, 3, r.Ledger.Snapshot().Attempts)
+		var sent int
+		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scheduling_attempts WHERE request_id=$1 AND metrics ? 'sent_at'", r.ID).Scan(&sent))
+		require.Equal(t, 3, sent)
+	})
+	t.Run("retired_declared_429_keeps_sibling_eligible", func(t *testing.T) {
+		s, db, _, accounts := controlledIntegration(t, false)
+		ctx, r := controlledIntegrationRequest(t, s)
+		for _, id := range []int64{1, 2} {
+			_, e := s.Store.PutFailureDomains(ctx, scheduling.AccountFailureDomains{AccountID: id, QuotaPoolID: "org-fixture"}, 7)
+			require.NoError(t, e)
+		}
 		a := controlledPick(t, s, ctx, r, accounts)
 		require.EqualValues(t, 1, a.ID)
-		resp, e := controlledHTTP(t, s, ctx, a.ID, func(w http.ResponseWriter, _ *http.Request) { w.Header().Set("Retry-After", "60"); w.WriteHeader(429) })
+		resp, e := controlledHTTP(t, s, ctx, a.ID, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(429)
+			_, _ = fmt.Fprint(w, `{"error":{"code":"organization_rate_limit_exceeded","organization_id":"org-fixture"}}`)
+		})
 		require.NoError(t, e)
 		controlledConsume(t, resp)
-		require.True(t, r.Ledger.Snapshot().BlockedFailureDomains["1"])
+		frozen, e := s.Store.FreezeFailureAdmission(ctx, 1, "test-model")
+		require.NoError(t, e)
+		sharedKey := frozen.SharedKey("quota_pool", "org-fixture", "")
+		require.False(t, r.Ledger.Snapshot().BlockedFailureDomains[sharedKey])
+		local, e := s.Store.InspectFailureDomains(ctx, 1, "test-model")
+		require.NoError(t, e)
+		require.False(t, local.Eligible, "account-local cooldown remains authoritative without a shared ledger block")
+		var localKeys []string
+		for _, gate := range local.Gates {
+			localKeys = append(localKeys, gate.Key)
+		}
+		require.Contains(t, localKeys, frozen.ModelKey())
+		require.False(t, r.Ledger.Snapshot().BlockedFailureDomains["1"])
+		sibling, e := s.Store.InspectFailureDomains(ctx, 2, "test-model")
+		require.NoError(t, e)
+		require.True(t, sibling.Eligible)
 		next := controlledPick(t, s, ctx, r, accounts)
-		require.EqualValues(t, 3, next.ID)
+		require.EqualValues(t, 2, next.ID)
+		resp, e = controlledHTTP(t, s, ctx, next.ID, func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprint(w, `{"output":"done"}`) })
+		require.NoError(t, e)
+		controlledConsume(t, resp)
+		require.Equal(t, 2, r.Ledger.Snapshot().Attempts)
+		require.ErrorIs(t, r.Ledger.CanAttempt(1, 0, time.Now(), true), scheduling.ErrAttemptBudget)
+		var siblingSends int
+		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scheduling_attempts WHERE request_id=$1 AND account_id=2 AND metrics ? 'sent_at'", r.ID).Scan(&siblingSends))
+		require.Equal(t, 1, siblingSends)
 	})
 	t.Run("downstream_commit_and_nonstream_timing", func(t *testing.T) {
 		s, _, _, accounts := controlledIntegration(t, false)
@@ -387,7 +488,8 @@ func TestControlledPrepareFailuresNeverCountActualDispatch(t *testing.T) {
 		a := controlledPick(t, s, ctx, r, accounts)
 		d, err := s.beginDispatch(ctx, a.ID, 10)
 		require.NoError(t, err)
-		creditKey := d.budget.PoolKey + ":credit"
+		require.Empty(t, d.budget.ID, "new group settings must not hide a second shared retry limit")
+		creditKey := "fixture:legacy_retry_credit"
 		require.NoError(t, s.redis.Set(ctx, creditKey, 10, time.Minute).Err())
 		// Real Redis raises WRONGTYPE when the second commit reaches HSET.
 		receiptKey := d.decision.PoolKey + ":receipts"
@@ -398,7 +500,7 @@ func TestControlledPrepareFailuresNeverCountActualDispatch(t *testing.T) {
 		require.Zero(t, r.Ledger.Snapshot().Attempts)
 		credit, err := s.redis.Get(ctx, creditKey).Int()
 		require.NoError(t, err)
-		require.Equal(t, 11, credit, "the first commit really succeeded before the second failed")
+		require.Equal(t, 10, credit, "account-pool dispatch never consumes or replenishes old retry credit")
 		require.NoError(t, s.redis.Del(ctx, receiptKey).Err())
 		d.Finish("not_sent", true, scheduling.ErrSharedState)
 		d.Finish("duplicate", true, nil)

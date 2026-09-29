@@ -25,13 +25,22 @@ func TestOpenAIWSControlledTurnKeepsRetryAndResetsNextTurn(t *testing.T) {
 	first.Model = "model-a"
 	first.SessionID = "registered-session"
 	first.owner = true
+	first.Policy, first.Profile = accountPoolPolicy(scheduling.DefaultGroupPolicy(0), "model-a")
+	first.Ledger = scheduling.NewAttemptLedger(first.Policy.Retry, first.Profile, first.Started, first.ClientDeadline)
+	require.NoError(t, first.Ledger.BeginAttempt(11, 0, time.Now(), true))
+	first.Ledger.MarkFirstOutputTimeout()
+	firstLedger := first.Ledger
+	firstBudget := firstLedger.Snapshot()
+	t.Cleanup(first.Close)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("GET", "/v1/responses", nil)
 	retry, err := svc.prepareControlledWSTurn(ctx, c, []byte(`{"model":"model-a"}`), "model-a", "new-untrusted-session", false)
 	require.NoError(t, err)
 	require.Same(t, first, controlledRequest(retry))
+	require.Same(t, firstLedger, controlledRequest(retry).Ledger)
+	require.Equal(t, firstBudget, controlledRequest(retry).Ledger.Snapshot(), "retry must preserve the same turn budget and timeout history")
 	require.Equal(t, "registered-session", controlledRequest(retry).SessionID)
-	m.ExpectQuery("SELECT version, policy FROM scheduling_policies").WithArgs(int64(0), "model-b").WillReturnError(sql.ErrNoRows)
+	m.ExpectQuery("SELECT version,policy FROM scheduling_group_policies").WithArgs(int64(0)).WillReturnError(sql.ErrNoRows)
 	next, err := svc.prepareControlledWSTurn(ctx, c, []byte(`{"model":"model-b","reasoning":{"effort":"high"}}`), "model-b", "", true)
 	require.NoError(t, err)
 	r := controlledRequest(next)
@@ -42,6 +51,15 @@ func TestOpenAIWSControlledTurnKeepsRetryAndResetsNextTurn(t *testing.T) {
 	require.Equal(t, "model-b", r.Model)
 	require.True(t, r.owner)
 	require.Equal(t, "ws", r.Protocol)
+	require.NotNil(t, r.Ledger)
+	require.NotSame(t, firstLedger, r.Ledger)
+	require.Zero(t, r.Ledger.Snapshot().Attempts)
+	require.False(t, r.Ledger.Snapshot().TimeoutSeen)
+	require.True(t, r.Policy.Enabled)
+	require.True(t, r.Policy.AccountPool)
+	require.Equal(t, scheduling.DefaultGroupMaxAttempts, r.Policy.Retry.MaxAttempts)
+	require.Equal(t, firstBudget, firstLedger.Snapshot(), "next turn cannot reset the preceding turn ledger")
+	t.Cleanup(r.Close)
 	require.NoError(t, m.ExpectationsWereMet())
 }
 func TestOpenAIWSControlledManualPauseRetainsOwner(t *testing.T) {

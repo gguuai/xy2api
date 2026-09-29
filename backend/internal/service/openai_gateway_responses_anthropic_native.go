@@ -117,6 +117,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+	if !clientStream {
+		upstreamCtx = withControlledBufferedResponse(upstreamCtx)
+	}
 	upstreamReq, forwardedBody, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
 	releaseUpstreamCtx()
 	if err != nil {
@@ -158,7 +161,8 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, retErr error) {
+	defer finishControlledNonstreamResponse(resp, &retErr)
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -169,6 +173,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	var finalResp *apicompat.AnthropicResponse
+	terminal, failed := false, false
 	var usage ClaudeUsage
 
 	// 读间隔上限：上游挂住 SSE 时中止组装（缓冲路径尚未提交响应头，可回 502）。
@@ -226,6 +231,12 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 			continue
 		}
 
+		terminal = terminal || event.Type == "message_stop"
+		failed = failed || event.Type == "error"
+		if event.Type == "error" {
+			observeControlledBufferedFailure(resp, []byte(payload))
+		}
+
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -259,8 +270,10 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	}
 
 	if finalResp == nil {
+		err := fmt.Errorf("upstream stream ended without response")
+		rejectControlledNonstreamResponse(resp, err)
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
+		return nil, err
 	}
 
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
@@ -275,6 +288,10 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	if claude.IsOpus55(upstreamModel) {
 		finalResp.Model = upstreamModel
 	}
+	if err := validateAnthropicBufferedResponse(resp, finalResp, terminal && !failed); err != nil {
+		return nil, err
+	}
+
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel
 

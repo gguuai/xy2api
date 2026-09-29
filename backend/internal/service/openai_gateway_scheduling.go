@@ -259,6 +259,9 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	if account, handled, err := s.selectControlledAuxiliaryOpenAI(ctx, groupID, sessionHash, requestedModel, excludedIDs, "", PlatformOpenAI); handled || err != nil {
+		return account, err
+	}
 	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "", false)
 }
 
@@ -275,6 +278,9 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 ) (*Account, error) {
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
+	if account, handled, err := s.selectControlledAuxiliaryOpenAI(ctx, groupID, sessionHash, requestedModel, nil, requiredCapability, platform); handled || err != nil {
+		return account, err
+	}
 	return s.selectAccountForModelWithExclusions(
 		ctx,
 		groupID,
@@ -1117,6 +1123,16 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+	if s.controlledScheduling != nil {
+		r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, requestedModel, sessionHash)
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			selected, _, err := s.selectControlledOpenAI(ctx, r, OpenAIAccountScheduleRequest{GroupID: groupID, SessionHash: sessionHash, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, Platform: PlatformOpenAI})
+			return selected, err
+		}
+	}
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	ctx = s.withOpenAIGroupPrivacyRequirement(ctx, groupID)
 	// 分组利润控制：legacy 公共入口同样装门，保证不经
@@ -1522,6 +1538,9 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
 	if s.concurrencyService == nil {
 		return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
+	}
+	if Sub2APISchedulingEnabled(ctx) {
+		return s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
 	}
 	return s.concurrencyService.AcquireAccountSlot(ctx, accountID, s.codexEffectiveConcurrency(ctx, accountID, maxConcurrency))
 }

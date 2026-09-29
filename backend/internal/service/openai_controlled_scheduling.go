@@ -22,6 +22,7 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 	req.Platform = NormalizeOpenAICompatiblePlatform(req.Platform)
 	req.RequirePrivacySet = s.openAIGroupRequiresPrivacySet(ctx, req.GroupID)
 	checker := &defaultOpenAIAccountScheduler{service: s}
+	qualityState, qualityPinned := s.accountPoolQualitySnapshot(ctx)
 	ownerID := int64(0)
 	previous := strings.TrimSpace(req.PreviousResponseID)
 	if previous != "" {
@@ -39,9 +40,16 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 		}
 	} else if parent := s.resolveOpenAIGuardianParentAccountID(ctx, req.GroupID); parent > 0 {
 		ownerID = parent
+	} else if qualityPinned && qualityState.Generation > 0 {
+		ownerID = qualityState.Binding
+		if ownerID == 0 {
+			ownerID = qualityState.Owner
+		}
+		if ownerID == 0 {
+			return nil, decision, fmt.Errorf("protocol_owner_not_found")
+		}
 	}
 	var accounts []*Account
-	allowDrainingOwner := false
 	if ownerID > 0 {
 		a, err := s.accountRepo.GetByID(ctx, ownerID)
 		if err != nil {
@@ -53,21 +61,17 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 		if !s.openAIAccountMatchesSchedulingGroup(a, req.GroupID) {
 			return nil, decision, fmt.Errorf("protocol_owner_outside_authorized_group")
 		}
-		if !a.Schedulable {
-			allowed, e := s.controlledScheduling.Store.CanContinueSession(ctx, a.ID, r.SessionID)
-			if e != nil {
-				return nil, decision, e
-			}
-			if !allowed {
-				return nil, decision, scheduling.ErrControlBlocked
-			}
-			allowDrainingOwner = true
-		}
-		accounts = []*Account{a}
+		// Freeze the authorized continuation owner before any availability
+		// rejection. Removing a response ID in an adapter must not move state.
 		r.mu.Lock()
 		r.owner = true
 		r.ownerAccountID = ownerID
 		r.mu.Unlock()
+		if !a.Schedulable {
+			return nil, decision, scheduling.ErrControlBlocked
+		}
+
+		accounts = []*Account{a}
 	} else {
 		pool, err := s.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
 		if err != nil {
@@ -86,10 +90,9 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 			return false, "missing"
 		}
 		a := account
-		if allowDrainingOwner && a.ID == ownerID && !a.Schedulable {
-			copy := *a
-			copy.Schedulable = true
-			a = &copy
+
+		if accountPoolQualityBlocked(a, qualityState, qualityPinned || ownerID > 0, time.Now()) {
+			return false, "observed_model_quality"
 		}
 		if !a.IsSchedulable() {
 			return false, "hard_unavailable"
@@ -119,11 +122,30 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 		r.mu.Lock()
 		d := r.Decision
 		r.mu.Unlock()
-		decision.Layer = "controlled:" + d.Reason
+		s.bindAccountPoolQuality(ctx, qualityState, selection.Account.ID)
+		decision.Layer = "account_pool:" + d.Reason
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
 		decision.CandidateCount = len(accounts)
 		return attachSelectionProfitGate(ctx, selection), decision, nil
 	}
 	return nil, decision, scheduling.ErrNoCandidate
+}
+
+func (s *OpenAIGatewayService) selectControlledAuxiliaryOpenAI(ctx context.Context, groupID *int64, sessionID, model string, excluded map[int64]struct{}, capability OpenAIEndpointCapability, platform string) (*Account, bool, error) {
+	if s.controlledScheduling == nil {
+		return nil, false, nil
+	}
+	r, enabled, err := s.controlledScheduling.loadPolicy(ctx, groupID, model, sessionID)
+	if err != nil || !enabled {
+		return nil, enabled, err
+	}
+	r.mu.Lock()
+	r.Auxiliary = true
+	r.mu.Unlock()
+	selection, _, err := s.selectControlledOpenAI(ctx, r, OpenAIAccountScheduleRequest{GroupID: groupID, SessionHash: sessionID, RequestedModel: model, ExcludedIDs: excluded, RequiredCapability: capability, Platform: platform})
+	if err != nil {
+		return nil, true, err
+	}
+	return selection.Account, true, nil
 }

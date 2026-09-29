@@ -25,10 +25,11 @@ var (
 )
 
 type PolicyRecord struct {
-	GroupID int64   `json:"group_id"`
-	Model   string  `json:"model"`
-	Version int64   `json:"version"`
-	Policy  *Policy `json:"policy"`
+	GroupID     int64               `json:"group_id"`
+	Model       string              `json:"model"`
+	Version     int64               `json:"version"`
+	Policy      *Policy             `json:"policy"`
+	Diagnostics []ProfileDiagnostic `json:"diagnostics,omitempty"`
 }
 type ControlSnapshot struct {
 	AccountID           int64      `json:"account_id"`
@@ -55,6 +56,7 @@ type ControlCommand struct {
 	SessionMaxTurns        int    `json:"session_max_turns,omitempty"`
 }
 type DispatchRequest struct {
+	Failure         *FailureAdmission
 	HardConcurrency int
 	TicketID        string
 	RequestID       string
@@ -66,6 +68,7 @@ type DispatchRequest struct {
 	LeaseDuration time.Duration
 }
 type DispatchTicket struct {
+	Failure      *FailureAdmission
 	TicketID     string
 	RequestID    string
 	AccountID    int64

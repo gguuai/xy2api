@@ -17,7 +17,7 @@
             @create="showCreate = true"
           >
             <template #after>
-              <RouterLink to="/admin/scheduling" class="btn btn-secondary">{{ t('admin.scheduling.title') }}</RouterLink>
+              <RouterLink v-if="schedulingModeStore.isControlled" :to="{ path: '/admin/scheduling', query: /^\d+$/.test(String(params.group)) && Number(params.group) > 0 ? { group_id: String(params.group) } : {} }" class="btn btn-secondary">{{ /^\d+$/.test(String(params.group)) && Number(params.group) > 0 ? t('admin.scheduling.groupPolicy.quickAdjust') : t('admin.scheduling.title') }}</RouterLink>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -190,6 +190,7 @@
           @clear="clearSelection"
           @select-page="selectPage"
           @select-all-results="handleSelectAllResults"
+          :scheduling-busy="selIds.some(id => togglingSchedulable.has(id))"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -292,12 +293,12 @@
               <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
             </div>
           </template>
+          <template #header-schedulable="{ column }"><div class="flex items-center gap-1"><span>{{ column.label }}</span><HelpTooltip :content="t('admin.scheduling.accountSwitchHint')" width-class="w-72" /></div></template>
           <template #cell-schedulable="{ row }">
             <div class="flex flex-col items-start gap-1.5">
-            <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
-              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
+            <button type="button" role="switch" :aria-checked="row.schedulable" :aria-busy="togglingSchedulable.has(row.id)" :aria-label="t('admin.accounts.columns.schedulable') + ' ' + row.name" @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable.has(row.id)" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out motion-reduce:transition-none focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
+              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out motion-reduce:transition-none" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
             </button>
-              <button class="text-xs text-primary-600 hover:underline" @click="schedulingControlAccount = row">{{ schedulingControls[row.id] ? t('admin.scheduling.states.' + schedulingControls[row.id].state) : t('admin.scheduling.controlTitle') }}</button>
             </div>
           </template>
           <template #cell-iq_check="{ row }">
@@ -457,7 +458,6 @@
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
-    <AccountSchedulingControlDialog :show="schedulingControlAccount !== null" :account="schedulingControlAccount" @close="schedulingControlAccount = null" @updated="handleSchedulingControlUpdated" @observed="control => schedulingControls[control.account_id] = control" />
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
@@ -517,8 +517,7 @@ import AccountTableActions from '@/components/admin/account/AccountTableActions.
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import IQCheckCell from '@/components/account/IQCheckCell.vue'
-import AccountSchedulingControlDialog from '@/components/account/AccountSchedulingControlDialog.vue'
-import type { AccountSchedulingControl } from '@/types/scheduling'
+import { useSchedulingModeStore } from '@/stores/schedulingMode'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
@@ -550,13 +549,7 @@ const IQCheckResultsModal = defineAsyncComponent(() => import('@/components/admi
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
-const schedulingControlAccount = ref<{ id: number; name: string } | null>(null)
-const schedulingControls = ref<Record<number, AccountSchedulingControl>>({})
-const handleSchedulingControlUpdated = (control: AccountSchedulingControl) => {
-  schedulingControls.value[control.account_id] = control
-  void reload()
-}
-
+const schedulingModeStore = useSchedulingModeStore()
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
@@ -632,7 +625,8 @@ const statsAcc = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
-const togglingSchedulable = ref<number | null>(null)
+const togglingSchedulable = ref(new Set<number>())
+let schedulingMutationVersion = 0
 const togglingIQCheck = ref(new Set<number>())
 const iqRecordsAccount = ref<Account | null>(null)
 const handleIQSummaryUpdated = (state: NonNullable<Account['iq_check']>) => {
@@ -1091,7 +1085,7 @@ const toggleColumn = (key: string) => {
 }
 
 const isColumnVisible = (key: string) => !hiddenColumns.has(key)
-const shouldIncludeSchedulerScore = () => isColumnVisible('scheduler_score')
+const shouldIncludeSchedulerScore = () => schedulingModeStore.isSub2API && isColumnVisible('scheduler_score')
 const syncAccountListDerivedParams = () => {
   // Keep every load path, including auto-refresh and sorting, aligned with the current column visibility.
   const requestParams = params as any
@@ -1109,7 +1103,16 @@ const {
   handlePageChange: baseHandlePageChange,
   handlePageSizeChange: baseHandlePageSizeChange
 } = useTableLoader<AccountListItem, any>({
-  fetchFn: adminAPI.accounts.list,
+  fetchFn: async (...args: Parameters<typeof adminAPI.accounts.list>): ReturnType<typeof adminAPI.accounts.list> => {
+    const version = schedulingMutationVersion
+    const result = await adminAPI.accounts.list(...args)
+    if (version === schedulingMutationVersion && togglingSchedulable.value.size === 0) return result
+    // A list requested before an account toggle must not restore its old switch state.
+    const confirmed = new Map(accounts.value.map(account => [account.id, account.schedulable]))
+    return { ...result, items: result.items.map(account => confirmed.has(account.id)
+      ? { ...account, schedulable: confirmed.get(account.id)! }
+      : account) }
+  },
   initialParams: {
     platform: '',
     type: '',
@@ -1474,6 +1477,7 @@ const refreshAccountsIncrementally = async () => {
   if (autoRefreshFetching.value) return
   syncAccountListDerivedParams()
   autoRefreshFetching.value = true
+  const schedulingVersion = schedulingMutationVersion
   try {
     const result = await adminAPI.accounts.listWithEtag(
       pagination.page,
@@ -1492,6 +1496,7 @@ const refreshAccountsIncrementally = async () => {
       { etag: autoRefreshETag.value }
     )
 
+    if (schedulingVersion !== schedulingMutationVersion || togglingSchedulable.value.size > 0) return
     if (result.etag) {
       autoRefreshETag.value = result.etag
     }
@@ -1831,7 +1836,7 @@ const allColumns = computed(() => {
   c.push({ key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false })
   c.push(
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
-    { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
+    { key: 'priority', label: t(schedulingModeStore.isControlled ? 'admin.scheduling.modeSettings.defaultPriority' : 'admin.accounts.columns.priority'), sortable: true },
     { key: 'scheduler_score', label: t('admin.accounts.columns.schedulerScore'), sortable: false },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
     { key: 'upstream_billing_rate', label: t('admin.accounts.columns.upstreamBillingRate'), sortable: true },
@@ -1841,7 +1846,7 @@ const allColumns = computed(() => {
     { key: 'notes', label: t('admin.accounts.columns.notes'), sortable: false },
     { key: 'actions', label: t('admin.accounts.columns.actions'), sortable: false }
   )
-  return c
+  return c.filter(column => column.key !== 'scheduler_score' || schedulingModeStore.isSub2API)
 })
 
 // Columns that can be toggled (exclude select, name, and actions)
@@ -2044,6 +2049,10 @@ const normalizeBulkSchedulableResult = (
 }
 const handleBulkToggleSchedulable = async (schedulable: boolean) => {
   const accountIds = [...selIds.value]
+  if (!accountIds.length || accountIds.some(id => togglingSchedulable.value.has(id))) return
+  accountIds.forEach(id => togglingSchedulable.value.add(id))
+  schedulingMutationVersion++
+  enterAutoRefreshSilentWindow()
   try {
     const result = await adminAPI.accounts.bulkUpdate(accountIds, { schedulable })
     const { successIds, failedIds, successCount, failedCount, hasIds, hasCounts } = normalizeBulkSchedulableResult(result, accountIds)
@@ -2077,6 +2086,10 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
   } catch (error) {
     console.error('Failed to bulk toggle schedulable:', error)
     appStore.showError(t('common.error'))
+  } finally {
+    accountIds.forEach(id => togglingSchedulable.value.delete(id))
+    schedulingMutationVersion++
+    enterAutoRefreshSilentWindow()
   }
 }
 const buildBulkEditFilterSnapshot = () => {
@@ -2488,8 +2501,11 @@ const confirmCreateSparkShadow = async () => {
 const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.value = true }
 const confirmDelete = async () => { if(!deletingAcc.value) return; try { await adminAPI.accounts.delete(deletingAcc.value.id); showDeleteDialog.value = false; deletingAcc.value = null; reload() } catch (error) { console.error('Failed to delete account:', error) } }
 const handleToggleSchedulable = async (a: Account) => {
+  if (togglingSchedulable.value.has(a.id)) return
   const nextSchedulable = !a.schedulable
-  togglingSchedulable.value = a.id
+  togglingSchedulable.value.add(a.id)
+  schedulingMutationVersion++
+  enterAutoRefreshSilentWindow()
   try {
     const updated = await adminAPI.accounts.setSchedulable(a.id, nextSchedulable)
     updateSchedulableInList([a.id], updated?.schedulable ?? nextSchedulable)
@@ -2498,7 +2514,8 @@ const handleToggleSchedulable = async (a: Account) => {
     console.error('Failed to toggle schedulable:', error)
     appStore.showError(t('admin.accounts.failedToToggleSchedulable'))
   } finally {
-    togglingSchedulable.value = null
+    togglingSchedulable.value.delete(a.id)
+    schedulingMutationVersion++
   }
 }
 const handleToggleIQCheck = async (a: Account) => {
@@ -2568,6 +2585,8 @@ const handleClickOutside = (event: MouseEvent) => {
     showAutoRefreshDropdown.value = false
   }
 }
+
+watch(() => schedulingModeStore.isSub2API, () => { void load() })
 
 onMounted(async () => {
   if (typeof window !== 'undefined') {

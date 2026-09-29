@@ -208,6 +208,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
 	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, reqModel, reqStream)
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	pricingCtx, pricingAt := service.WithGatewayTokenRequestPricing(c.Request.Context())
@@ -2149,6 +2150,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
+	service.CaptureControlledRequestMetadata(c.Request.Context(), body, parsedReq.Model, parsedReq.Stream)
 	setOpsRequestContext(c, parsedReq.Model, parsedReq.Stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsedReq.Stream, false)))
 
