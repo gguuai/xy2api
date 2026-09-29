@@ -4,13 +4,14 @@
 
 ## 当前交接状态
 
-### v0.2.1 修复 PR 提交准备，GitHub 认证已确认（2026-09-29）
+### v0.2.1 仅修复 PR #74 已提交，等待官方审核（2026-09-29）
 
 - 当前为独立修复副本 /opt/xy2api-v021-fix-20260929-anp5W2/work，分支 fix/v021-gateway-reliability-20260929，固定官方基线 e17664144。用户授权纯官方 D0～D4/G1、本地提交、推送 liulixin-lex/xy2api 和创建 PR，由维护者决定合并；不合并多组/活动二开，不自行合并 PR、发布或部署。
 - 已修 XY-001/002/007/008/009：非递归终端发送、13 条同步非流式路径安全读取回退、可信协议失败的 PG 账号模型冷却、明确未发送的 pending 判定；保留预算、deadline、owner、语义输出后禁重放及普通 30 秒冷却。18 个生产 Go 文件、7 个测试文件和修复记录为本轮差异，原前端/迁移/版本/provenance 不变。
 - 验证：全后端首轮 61 包通过、service 两项测试断言修正后整包复验通过（8022 顶层/7950 子项，11 skip）；首轮失败保留。隔离 repository/migrations 701/1206、handler 三轮 race 54/60、scheduling race 160/113、service 三轮关键 race 21/237、广泛守卫 race 104/555 均通过且无数据竞争。两轮 lint 均 0 issues，构建和 14 项同步工具测试通过；修复提交 94ce2793177eadc595c2c6f6ef6207d222e4510f 后 clean-tree 来源审计 exit 0，D0～D4/G1 本地完成。
 - 文档包括 docs/V021_RELIABILITY_FIX.md 以及修复PR版 V021_ISSUE_SUMMARY.md、V021_REMEDIATION_PLAN.md、ISSUES_AND_CHANGES.md；后三份从原检查资料整理，仅覆盖本次修复，不提交此前功能升级的详细方案。外部父目录保留 VALIDATION.json、PR_BODY.md 与原始日志。真实供应商、跳过项、浏览器/功能整合/部署边界不变，三个临时容器已清理。
-- 用户已配置GitHub并明确授权只提交修复及相应文档。代理默认HOME与root标准gh配置目录不同，指定现有GH_CONFIG_DIR后确认gguuai认证有效；官方无push权限、既有gguuai/xy2api fork有push权限且parent为liulixin-lex/xy2api。官方main仍e17664144、目标fork分支不存在、无重复PR。正常非强制推送后创建官方PR，不合并或部署；过去缺认证记录仅为历史。
+- 已通过既有gguuai/xy2api fork正常推送并创建官方PR #74：https://github.com/liulixin-lex/xy2api/pull/74；目标liulixin-lex/xy2api:main，基线仍e17664144。创建时head8e7c45bab、OPEN/非draft、31个文件，mergeable=true，未合并。远端文件清单与仅修复范围一致，四份问题/修复/验证文档齐全；CI已启动，初始部分检查成功，其余运行中，不能称全部CI通过。后续交接只改文档，同分支最新head和检查以PR实际状态为准。
+- 认证使用用户已配置的root标准gh目录；代理默认HOME不同，不复制Token、不借用其他项目密钥、不改origin或全局凭据。提交任务完成，等待维护者评审；不自行合并、发布、部署或恢复旧功能整合。过去缺认证记录为历史，不代表当前阻塞。
 
 ### 0.2.1 远端推送与正式发布（2026-09-29，已完成）
 
@@ -415,8 +416,6 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
-
-- `20260929-v021-fix-pr`：用户已配置GitHub并明确只提交修复及检查问题/修复/验证文档，不提交功能升级。当前head18e5df70f、业务提交94ce27931，官方main仍e17664144。认证gguuai有个人fork推送权限、无官方直推权限；使用既有fork创建面向liulixin-lex/xy2api:main的PR，先补文档和scope/audit检查。原二开/前端/迁移不纳入，不合并或部署。
 
 
 ### 20260929-dual-scheduling — 实施中
@@ -1422,3 +1421,10 @@ pnpm --dir frontend run build
 - 用户要求将修复和检查问题/修复/验证文档一起提交，但暂不提交之前功能升级。确认认证账户gguuai、官方main固定e17664144和既有个人fork权限；使用指定gh配置目录及单命令credential helper，不复制Token、不读取其他项目密钥、不改全局登录或origin。
 - 在修复分支新增三份仅修复范围的文档和精确.gitignore白名单，原本地含升级方案的文档完整保留、不复制进PR。补当前验证报告导航及状态，更新PR描述；业务/测试相对已验94ce27931零差异，前端/历史迁移/版本/provenance/policy相对官方基线零差异。文档链接/敏感标记检查通过。
 - 本轮只补交文档，不重复运行已完成的长业务回归；提交后重跑来源审计，并核对远端head、PR目标/来源、提交文件清单与CI初始状态。默认HOME下初次gh无认证及只读脚本正则转义错误已纠正，未造成远端写入或凭据泄露。最终提交与PR结果在后续日志记录。
+
+### 2026-09-29 — 20260929-v021-fix-pr — 官方 PR #74 创建并核对
+
+- 补文档提交8e7c45bab3bae17c27bf575c9e9d687453be953a，新增问题报告/修复开发文档/变更台账三个修复PR版本，连同现有修复验证记录提交；原完整功能升级规划保留在原工作区，不纳入PR。业务/测试与已验94ce27931完全相同，来源审计exit0、文档链接/敏感标记/空白检查通过。
+- 使用账号gguuai对既有fork推送单个fix/v021-gateway-reliability-20260929分支，没有force、all或tags；官方无直推权限，不尝试主线写入。远端分支sha与本地一致后创建liulixin-lex/xy2api PR #74，目标main/e17664144，OPEN/非draft、未合并、允许维护者编辑。
+- 创建后API逐项回读来源仓库、目标、head、31文件清单及checks。没有旧功能Go/Vue/迁移，只有18生产Go文件、7测试文件、5文档和.gitignore。创建时mergeable=true，来源审计等部分CI已成功，其他运行中；不将本地验收等同远端全绿。初次gh查询使用不支持的baseRefOid字段失败，改为支持字段并用REST核对base.sha，未重复创建PR。
+- 原始回读保存在候选父目录PR_SUBMISSION.readback.json，最终同分支交接head另由PR_SUBMISSION.final.json核实。此追加仅文档收尾，结束本任务并清理自己的进行中条目；原功能工作区/其他任务保留，不部署、不发版、不自行合并或变更站点数据。后续由维护者评审，用户另行指示才恢复功能升级。
