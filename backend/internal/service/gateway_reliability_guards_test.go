@@ -87,6 +87,11 @@ func TestControlledProtocolFailureEvidence(t *testing.T) {
 		provider, excluded bool
 	}{
 		{"responses", "{\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"}}}", true, false},
+		{"plain_json_error", `{"error":{"code":"server_error"}}`, true, false},
+		{"native_response_failed", `{"object":"response","status":"failed","output":[],"error":{"code":"server_error"}}`, true, false},
+		{"native_response_incomplete", `{"object":"response","status":"incomplete","error":{"code":"server_error"}}`, false, true},
+		{"native_response_cancelled", `{"object":"response","status":"cancelled","error":{"code":"server_error"}}`, false, true},
+		{"native_response_canceled", `{"object":"response","status":"canceled","error":{"code":"server_error"}}`, false, true},
 		{"anthropic", "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}", true, false},
 		{"null_code", "{\"type\":\"error\",\"error\":{\"code\":null,\"type\":\"server_error\"}}", true, false},
 		{"invalid_request", "{\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"type\":\"invalid_request_error\"}}", false, true},

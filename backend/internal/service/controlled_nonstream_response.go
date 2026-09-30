@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -97,7 +98,7 @@ func observeControlledBufferedFailure(resp *http.Response, payload []byte) {
 		return
 	}
 	v := gjson.ParseBytes(payload)
-	kind, status := v.Get("type").String(), v.Get("response.status").String()
+	kind, status := v.Get("type").String(), controlledProtocolResponseStatus(v)
 	failure := kind == "error" || kind == "response.failed" || status == "failed"
 	incomplete := kind == "response.incomplete" || kind == "response.cancelled" || kind == "response.canceled" ||
 		status == "incomplete" || status == "cancelled" || status == "canceled"
@@ -462,9 +463,17 @@ func (d *controlledDispatch) responseReadError(err error) error {
 	}
 	d.mu.Lock()
 	timedOut := d.responseDrainTimeout
+	attemptTimedOut := d.timeout
 	d.mu.Unlock()
 	if timedOut {
 		return errors.New("upstream error body deadline exceeded")
+	}
+	// The attempt timer cancels only the upstream child context. Keep that
+	// deadline distinct from caller/admin cancellation so buffered adapters can
+	// hand a pre-output timeout to the existing, budgeted failover handler.
+	if attemptTimedOut && !d.adminCancelled.Load() && d.request != nil &&
+		(d.request.clientContext == nil || d.request.clientContext.Err() == nil) {
+		return fmt.Errorf("upstream attempt deadline exceeded: %w", context.DeadlineExceeded)
 	}
 	return err
 }

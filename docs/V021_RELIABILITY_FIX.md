@@ -102,3 +102,26 @@ Codex direct images 已有独立的读取错误包装及外层转换协议；初
     go test -p 1 -parallel 1 -tags unit ./... -count=1
 
 验收边界：本轮对应修复开发文档 D0～D4/G1；T01～T16 结合新旧测试检查，T06～T10/T16 的活动与跨组部分仍属于后续 D5。T17～T30、三来源功能迁移、浏览器、真实供应商和部署未执行。不得据纯官方修复宣称新版功能合并已完成。
+
+## 2026-09-30 独立反证后的三个补修
+
+固定本次起点为 PR #74 的 85d5165788d0e4ee345a4c887e34704085e17392，仅叠加已经冻结的两份独立审查补丁。原修复和历史失败记录全部保留；未引入 PR #73 的前端/IQ 功能，不改版本、迁移、默认阈值或线上数据。本轮不执行推送、合并、发版或部署。
+
+| 项目 | 原 head 的实际反例 | 补修与边界 |
+| --- | --- | --- |
+| XY-007A 单次正文超时 | 上游返回200头后挂起，内部attempt timer使读取返回context.Canceled；Responses/raw Chat/native Gemini不能typed failover，raw Chat提前写响应 | responseReadError仅在内部单次超时、客户端仍有效且非管理员取消时保留DeadlineExceeded因果，交回原有限预算重试链；不新增循环或重置预算 |
+| XY-008A JSON协议冷却 | 普通error对象和object=response/status=failed均为PG cooldowns=0、Eligible=true；删除Redis健康键后第二实例重选 | 归一根response状态和嵌套状态，可信服务端错误写原PG权威冷却；incomplete/cancelled/canceled继续排除，仅账号/模型局部 |
+| XY-010 显式分组成员隔离 | simple模式请求组7会选择仅在组8的高优先级账号4，强owner也能越显式组 | 新controlledOpenAIAccountMatchesGroup在普通资格和owner入口都严格校验显式组；默认组保留standard未分组/simple全部账号规则，已授权强owner不换号 |
+
+新增运行证据：
+
+- pr74-fixed-critical-01：service/handler/scheduling定向13顶层/126子项PASS，0FAIL/0SKIP。原版三条旁路栈溢出反例保持，原PR对应五场景通过。
+- pr74-fixed-13-fallback-02：13条同步非流式适配器全部真实执行首上游超时取消、同请求ledger选账号2、有效响应被接受，attempts=2；3顶层/20子项PASS。
+- pr74-fixed-race-03：上述适配器、冷却、发送确定性、读取安全和取消边界9顶层/88子项PASS，0FAIL/0SKIP；未检测到data race。
+- 成员隔离BASELINE/MODIFIED/ROLLBACK退出1/0/1；修后4顶层/2子入口测试通过，31顶层/33子相关回归通过。40次真实本机HTTP发送，两个独立分组在交替模型下分别14:6和6:14，低层大权重和旧sticky不越级。
+
+上述新补修并未在这里宣称完整后端、完整race、最终制品或线上供应商全部通过。13适配器测试调用真实适配器、本机HTTP和隔离PG/Redis，在typed failover后由测试驱动同ledger的后续选择，不是全认证或真实计费端到端。成员新测试覆盖simple默认组和显式组；standard默认组保留性在本轮交叉审查中来自源码核对。历史pending没有迁移或自动修账，不将标记修复描述成已解决重复扣费。
+
+证据根目录为/xy2/artifacts/production-incident-20260930，pr74-review/review-evidence.json保存完整command/stdout/stderr/退出码/哈希；scheduler-review保存三态成员证据。源补丁SHA256为bffc16b376adb1456e9996d61e41b721f98448a97c01c1ce2f13edbc64ecf850和cfa25ef87336efa0fbf66bf28bd7e5c9064913f2a6f7e56e89473a12c68a4cbc。新本地HEAD、干净树来源审计与范围校验由pr74-final-evidence记录；组合全量、升级烟测及远端CI由根执行者独立收口，不以旧head通过替代。
+
+复验使用新建专用PG/Redis和仓库固定Go版本，运行go test -race -tags unit ./internal/service，-run选取TestReviewPR74、TestAccountPoolEntry及相邻守卫；完整命令以证据中的数组为准。切勿把会清理Redis DB15的夹具连向运行站点。

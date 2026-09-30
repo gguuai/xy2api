@@ -4,6 +4,13 @@
 
 ## 当前交接状态
 
+### PR #74 三项补修本地候选（2026-09-30）
+
+- 唯一候选 /xy2/artifacts/production-incident-20260930/pr74-final，起点85d5165788d0e4ee345a4c887e34704085e17392；仅冻结bffc16+cfa25三项补修、对应测试和本PR修复文档，无PR73前端/IQ、版本或迁移变化。原PR和两独立审查源码保持。
+- 已观察到原版三个递归崩溃、原PR普通JSON无PG冷却/内部正文超时不回退、simple显式组越界反例。补修后定向13/126、race9/88、13适配器同ledger继续选择和成员31/33相关回归通过；成员三态1/0/1保留。标准默认组边界为源码交叉核对，不额外声称该入口实测。
+- 本轮仅本地交付，Git身份沿用原仓local Codex。精确本地HEAD、文件范围、diff检查、干净树来源审计和可推送命令统一保存于pr74-final-evidence；不拿历史原PR全量结果代表这个后继。根执行者继续联合全量/制品/升级门禁并自行处理PR74远端，未授权本子任务push/合并/部署。
+- 真实供应商、历史pending修复和生产零风险均不由本地验证保证；完整新旧失败证据见pr74-review/review-evidence.json与scheduler-review。自身审查夹具已清理，原有服务与日志保留。
+
 ### v0.2.1 仅修复 PR #74 已提交，等待官方审核（2026-09-29）
 
 - 当前为独立修复副本 /opt/xy2api-v021-fix-20260929-anp5W2/work，分支 fix/v021-gateway-reliability-20260929，固定官方基线 e17664144。用户授权纯官方 D0～D4/G1、本地提交、推送 liulixin-lex/xy2api 和创建 PR，由维护者决定合并；不合并多组/活动二开，不自行合并 PR、发布或部署。
@@ -416,6 +423,7 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
 
 
 ### 20260929-dual-scheduling — 实施中
@@ -1428,3 +1436,10 @@ pnpm --dir frontend run build
 - 使用账号gguuai对既有fork推送单个fix/v021-gateway-reliability-20260929分支，没有force、all或tags；官方无直推权限，不尝试主线写入。远端分支sha与本地一致后创建liulixin-lex/xy2api PR #74，目标main/e17664144，OPEN/非draft、未合并、允许维护者编辑。
 - 创建后API逐项回读来源仓库、目标、head、31文件清单及checks。没有旧功能Go/Vue/迁移，只有18生产Go文件、7测试文件、5文档和.gitignore。创建时mergeable=true，来源审计等部分CI已成功，其他运行中；不将本地验收等同远端全绿。初次gh查询使用不支持的baseRefOid字段失败，改为支持字段并用REST核对base.sha，未重复创建PR。
 - 原始回读保存在候选父目录PR_SUBMISSION.readback.json，最终同分支交接head另由PR_SUBMISSION.final.json核实。此追加仅文档收尾，结束本任务并清理自己的进行中条目；原功能工作区/其他任务保留，不部署、不发版、不自行合并或变更站点数据。后续由维护者评审，用户另行指示才恢复功能升级。
+
+### 2026-09-30 — 20260930-pr74-production-followup — 仅修复后继交付
+
+- 以85d51657克隆独立pr74-final；先登记再应用两份SHA固定补丁，只改变4生产Go文件、3测试文件及5份既有修复/记忆文档。不从组合候选复制PR73功能，原分支未被重写。
+- 将三项新反例、取消/预算/owner边界、13适配器与PG/Redis实测、成员三态和静态/运行证据差别补入现有文档。历史日志及其他进行中条目保留。
+- 本地提交与标准python3 tools/upstream-sync/sync.py audit在干净树上的真实命令、退出码、HEAD与diff范围保存在pr74-final-evidence；最终检查不得用旧head替代。任何审计失败保留并反馈根执行者，不放宽policy或provenance。
+- 交接根执行者继续最终组合验收、CI和PR74远端操作；本子任务无push/merge/tag/deploy/生产操作。不存在本子任务待修业务代码；后续只有实际门禁失败才重新评估源码。

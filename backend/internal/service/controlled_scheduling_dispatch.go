@@ -445,7 +445,7 @@ func (d *controlledDispatch) ObserveFrame(frame []byte) {
 	semantic, answer, terminal, tool := classifySemanticEvent(frame)
 	v := gjson.ParseBytes(frame)
 	kind := v.Get("type").String()
-	status := v.Get("response.status").String()
+	status := controlledProtocolResponseStatus(v)
 	failure := kind == "error" || kind == "response.failed" || status == "failed" ||
 		v.Get("error").IsObject() || v.Get("response.error").IsObject()
 	incomplete := kind == "response.incomplete" || kind == "response.cancelled" || kind == "response.canceled" ||

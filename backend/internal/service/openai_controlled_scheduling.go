@@ -9,6 +9,16 @@ import (
 	"github.com/liulixin-lex/xy2api/internal/scheduling"
 )
 
+// Explicit account-pool groups always keep their own membership. Simple mode
+// broadens only the default group; the legacy scheduler's global pool rule must
+// not admit an account omitted from an explicit group's policy projection.
+func (s *OpenAIGatewayService) controlledOpenAIAccountMatchesGroup(account *Account, groupID *int64) bool {
+	if groupID != nil && *groupID > 0 {
+		return openAIStickyAccountMatchesGroup(account, groupID)
+	}
+	return s.openAIAccountMatchesSchedulingGroup(account, nil)
+}
+
 func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *ControlledRequest, req OpenAIAccountScheduleRequest) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{Layer: "controlled"}
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
@@ -58,7 +68,7 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 		if a == nil {
 			return nil, decision, fmt.Errorf("protocol_owner_not_found")
 		}
-		if !s.openAIAccountMatchesSchedulingGroup(a, req.GroupID) {
+		if !s.controlledOpenAIAccountMatchesGroup(a, req.GroupID) {
 			return nil, decision, fmt.Errorf("protocol_owner_outside_authorized_group")
 		}
 		// Freeze the authorized continuation owner before any availability
@@ -97,7 +107,7 @@ func (s *OpenAIGatewayService) selectControlledOpenAI(ctx context.Context, r *Co
 		if !a.IsSchedulable() {
 			return false, "hard_unavailable"
 		}
-		if !s.openAIAccountMatchesSchedulingGroup(a, req.GroupID) {
+		if !s.controlledOpenAIAccountMatchesGroup(a, req.GroupID) {
 			return false, "unauthorized_group"
 		}
 		if a.Platform != req.Platform || !a.IsOpenAICompatible() {
