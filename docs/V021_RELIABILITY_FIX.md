@@ -125,3 +125,13 @@ Codex direct images 已有独立的读取错误包装及外层转换协议；初
 证据根目录为/xy2/artifacts/production-incident-20260930，pr74-review/review-evidence.json保存完整command/stdout/stderr/退出码/哈希；scheduler-review保存三态成员证据。源补丁SHA256为bffc16b376adb1456e9996d61e41b721f98448a97c01c1ce2f13edbc64ecf850和cfa25ef87336efa0fbf66bf28bd7e5c9064913f2a6f7e56e89473a12c68a4cbc。新本地HEAD、干净树来源审计与范围校验由pr74-final-evidence记录；组合全量、升级烟测及远端CI由根执行者独立收口，不以旧head通过替代。
 
 复验使用新建专用PG/Redis和仓库固定Go版本，运行go test -race -tags unit ./internal/service，-run选取TestReviewPR74、TestAccountPoolEntry及相邻守卫；完整命令以证据中的数组为准。切勿把会清理Redis DB15的夹具连向运行站点。
+
+### CI真实存储门禁与联合候选证据更新
+
+原CI的make test-unit没有调度专用PG/Redis环境，opt-in用例会SKIP。新门禁仅为test job创建postgres:18-alpine和redis:8.4-alpine健康服务，宿主端口15432/16379；fixture环境只注入新步骤，原unit/integration保持。三包串行race使用-json保留逐测试日志，后处理要求14个service关键测试、1个认证handler测试和5个核心AccountPool测试实际run且PASS，拒绝全部skip/fail和缺少包完成事件，空匹配不能通过；其他匹配的AccountPool规则也运行。
+
+本地只校验workflow解析、真实函数/包匹配、shell语法及日志守卫，不将尚未执行的GitHub步骤写成PASS。远端结果须绑定追加CI后的PR head，在Scheduling reliability with real PostgreSQL and Redis日志核对新用例与0SKIP。
+
+已重开根执行者联合候选6393e18128b2b710af5e0c1397de53bf9c9b1608的证据：全后端unit/integration/lint均exit0；complete-05及独立审计PASS。8阶段包含0.1.9升级、保留313库的旧二进制场景、两种备份恢复和新装；候选48项基础HTTP、56次调度请求通过，3:1实发30/10。原0.2.1及恢复原版均真实栈溢出exit2；常驻容器保持、测试资源清理通过。
+
+该镜像含PR73联合功能，不能称PR74独立镜像已验收；本CI后继不改业务源码或冻结镜像。完整结果见/xy2/artifacts/production-incident-20260930/startup-runs/complete-05/{RESULT.json,INDEPENDENT_AUDIT.json}及BUILD.json；RESULT SHA256为b75c2b6f717fc46fd250c38206bf52a9df700d594cc2d97e187bb934cb3283d1。真实供应商与生产部署不在此次隔离验收范围。

@@ -6,6 +6,8 @@
 
 ### PR #74 三项补修本地候选（2026-09-30）
 
+- 新增CI专用PG18/Redis8.4及15432/16379端口，只向新step注入fixture环境，保留原unit/integration；串行三包race的JSON守卫要求关键测试run+PASS、全范围0SKIP，拒绝空匹配。工作流本地校验和CI后继HEAD见pr74-final-evidence/CI_FINAL.json；真实GitHub门禁由根执行者推送后核对。
+- 联合候选6393e1812全后端unit/integration/lint均exit0；complete-05和独立审计PASS，48基础HTTP/56调度请求、30:10权重、升级及备份恢复通过。其含PR73，不能冒称PR74独立镜像已测；本CI后继不改业务或冻结制品。
 - 唯一候选 /xy2/artifacts/production-incident-20260930/pr74-final，起点85d5165788d0e4ee345a4c887e34704085e17392；仅冻结bffc16+cfa25三项补修、对应测试和本PR修复文档，无PR73前端/IQ、版本或迁移变化。原PR和两独立审查源码保持。
 - 已观察到原版三个递归崩溃、原PR普通JSON无PG冷却/内部正文超时不回退、simple显式组越界反例。补修后定向13/126、race9/88、13适配器同ledger继续选择和成员31/33相关回归通过；成员三态1/0/1保留。标准默认组边界为源码交叉核对，不额外声称该入口实测。
 - 本轮仅本地交付，Git身份沿用原仓local Codex。精确本地HEAD、文件范围、diff检查、干净树来源审计和可推送命令统一保存于pr74-final-evidence；不拿历史原PR全量结果代表这个后继。根执行者继续联合全量/制品/升级门禁并自行处理PR74远端，未授权本子任务push/合并/部署。
@@ -423,6 +425,7 @@
 Sub2API 兼容基线已更新到 `v0.2.8`。下方历史日志保留原样；本轮没有升级生产实例。
 
 ## 进行中的工作
+
 
 
 
@@ -1443,3 +1446,9 @@ pnpm --dir frontend run build
 - 将三项新反例、取消/预算/owner边界、13适配器与PG/Redis实测、成员三态和静态/运行证据差别补入现有文档。历史日志及其他进行中条目保留。
 - 本地提交与标准python3 tools/upstream-sync/sync.py audit在干净树上的真实命令、退出码、HEAD与diff范围保存在pr74-final-evidence；最终检查不得用旧head替代。任何审计失败保留并反馈根执行者，不放宽policy或provenance。
 - 交接根执行者继续最终组合验收、CI和PR74远端操作；本子任务无push/merge/tag/deploy/生产操作。不存在本子任务待修业务代码；后续只有实际门禁失败才重新评估源码。
+
+### 2026-09-30 — 20260930-pr74-ci-storage-gate — CI真实存储防跳过
+
+- 在b284142b5后仅增强backend-ci及说明，加入专用PG18/Redis8.4健康服务与真实存储串行race。核对AccountPool/ReviewPR74/ReviewV021/读取安全/协议/发送确定性/认证handler实际函数，JSON拒绝skip/fail/空包或未完成的关键测试。环境不传入原unit/integration。
+- 本地验证为YAML解析、包/函数元数据、shell语法和日志守卫，不重跑已验业务代码。字面命令、退出码和独立patch见pr74-final-evidence；尚未执行的新GitHub步骤不写为PASS，根执行者在最终head核对逐case。
+- 已重开联合6393全量/complete-05/独立审计证据，文档保留与PR74独立后继的身份区别。后续上游新模型支持不混入当前修复。本子任务无push/merge/deploy或生产操作。

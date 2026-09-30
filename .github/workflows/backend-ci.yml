@@ -34,6 +34,29 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    services:
+      scheduling-postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: scheduling_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: scheduling_ci_fixture
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d scheduling_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      scheduling-redis:
+        image: redis:8.4-alpine
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v6
       - name: Check Docker Compose simple mode environment
@@ -53,6 +76,69 @@ jobs:
       - name: Integration tests
         working-directory: backend
         run: make test-integration
+      - name: Scheduling reliability with real PostgreSQL and Redis
+        working-directory: backend
+        timeout-minutes: 20
+        env:
+          SCHEDULING_TEST_POSTGRES_DSN: postgres://postgres:scheduling_ci_fixture@127.0.0.1:15432/scheduling_ci?sslmode=disable
+          SCHEDULING_TEST_REDIS_ADDR: 127.0.0.1:16379
+        run: |
+          set -euo pipefail
+          go test -race -p 1 -parallel 1 -tags=unit \
+            ./internal/service ./internal/handler ./internal/scheduling \
+            -run '^(TestAccountPool|TestReviewPR74|TestReviewV021|TestNonstreamReadErrorSafety$|TestControlledProtocolFailureEvidence$|TestControlledTerminalUsageCertainty$|TestGatewayBufferedReadFailureAuthenticatedFailover$)' \
+            -count=1 -timeout=10m -json | tee "$RUNNER_TEMP/scheduling-reliability.jsonl"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          required = {
+              "service": {
+                  "TestAccountPoolEntryExplicitGroupExcludesOutsideSimplePool",
+                  "TestAccountPoolEntrySharedModelWeightsAndIndependentGroups",
+                  "TestAccountPoolEntrySimpleDefaultScopeStillIncludesAllAccounts",
+                  "TestAccountPoolEntryOwnerCannotEscapeExplicitGroup",
+                  "TestReviewPR74ProtocolEnvelopeCooldown",
+                  "TestReviewPR74BufferedAttemptTimeoutAllowsFailover",
+                  "TestReviewPR74AttemptTimeoutCancellationBoundary",
+                  "TestReviewV021OpenAITransportNoRecursiveDispatch",
+                  "TestReviewV021BufferedReadFailureAllowsFailover",
+                  "TestReviewV021ProviderCooldownSurvivesRedisHealthLoss",
+                  "TestReviewV021ProvenNotSentHasNoPendingUsage",
+                  "TestNonstreamReadErrorSafety",
+                  "TestControlledProtocolFailureEvidence",
+                  "TestControlledTerminalUsageCertainty",
+              },
+              "handler": {
+                  "TestGatewayBufferedReadFailureAuthenticatedFailover",
+              },
+              "scheduling": {
+                  "TestAccountPoolAdmissionThenPriorityThenWeight",
+                  "TestAccountPoolExhaustsEveryEligibleAccountBeforeLowerTier",
+                  "TestAccountPoolSWRRRatioAndTwoClientFairness",
+                  "TestAccountPoolFailureClassifierKeepsAuthoritativeScopeAndReplayStops",
+                  "TestAccountPoolDoesNotConsultOrMutateLegacyRetryCredit",
+              },
+          }
+          events = [json.loads(line) for line in
+                    Path(os.environ["RUNNER_TEMP"], "scheduling-reliability.jsonl").read_text().splitlines()
+                    if line.strip()]
+          rejected = [event for event in events if event.get("Action") in {"skip", "fail"}]
+          if rejected:
+              raise SystemExit("Scheduling reliability gate cannot skip or fail: " +
+                               json.dumps(rejected, ensure_ascii=False))
+          for name, expected in required.items():
+              package = "github.com/liulixin-lex/xy2api/internal/" + name
+              ran = {event.get("Test") for event in events
+                     if event.get("Package") == package and event.get("Action") == "run"}
+              passed = {event.get("Test") for event in events
+                        if event.get("Package") == package and event.get("Action") == "pass"}
+              missing = expected - (ran & passed)
+              if missing or None not in passed:
+                  raise SystemExit(f"{package}: missing completed required tests {sorted(missing)}")
+              print(f"{package}: {len(ran)} tests/subtests ran, all {len(expected)} required tests PASS, 0 SKIP")
+          PY
 
   windows-plugin-archive:
     runs-on: windows-latest
